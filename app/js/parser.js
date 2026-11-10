@@ -158,6 +158,69 @@
     return { bank: /kaspi/i.test(text) ? 'Kaspi' : null, txs };
   };
 
+  /* ---------- Уведомления банков (Android) ----------
+     Приходят из BankNotificationService: { pkg, title, text, time }.
+     Форматы примерные, например Kaspi: «Покупка 2 500 ₸ MAGNUM. Доступно 45 000 ₸»,
+     «Вам перевели 5 000 ₸ от Айгерим Б.». Перед релизом сверить с настоящими уведомлениями. */
+  const PUSH_AMT = new RegExp('([+\\-\\u2212]?)' + SP + '*((?:\\d{1,3}(?:' + SP + '\\d{3})+|\\d+)(?:[.,]\\d{1,2})?)' + SP + '*(?:₸|KZT|тг\\.?|тенге|теңге)', 'i');
+  const PUSH_BALANCE = new RegExp('(доступно|остаток|баланс|қолжетімді|қалдық|available|balance)[:\\s]*[\\d\\s\\u00a0\\u202f.,]+' + SP + '*(₸|KZT|тг\\.?)?', 'gi');
+  const PUSH_SKIP = /одноразов|код\s*(подтвержд|для|:)|растау\s*коды|verification\s*code|\botp\b|отклонен|отклонён|не\s*прош|недостаточно|қабылданбады|declined|insufficient/i;
+  const PUSH_IN = /зачисл|поступ|получен|пополнен|вам\s*перев|сізге|түсті|кіріс|толықтыр|received|credited|incoming|top-?up/i;
+  const PUSH_OP = new RegExp('(' + OPS.map((o) => o[0].replace(/\s+/g, '\\s+')).join('|') + ')', 'i');
+  const BANK_PKG = [[/kaspi/, 'Kaspi'], [/halyk/, 'Halyk'], [/freedom|ffin/, 'Freedom'], [/jusan/, 'Jusan'], [/bcc/, 'BCC'], [/forte/, 'Forte'], [/homecredit/, 'Home Credit'], [/eubank/, 'Евразийский'], [/altyn/, 'Altyn'], [/otbasy/, 'Otbasy'], [/bereke/, 'Bereke']];
+  NZ.pushBank = (pkg) => { const p = String(pkg || '').toLowerCase(); const f = BANK_PKG.find((b) => b[0].test(p)); return f ? f[1] : 'Bank'; };
+
+  NZ.parsePush = function (n, rules) {
+    if (!n || !n.time) return null;
+    const full = (String(n.title || '') + '. ' + String(n.text || '')).replace(/\s+/g, ' ').trim();
+    if (PUSH_SKIP.test(full)) return null;
+    const body = full.replace(PUSH_BALANCE, ' ');
+    const m = PUSH_AMT.exec(body);
+    if (!m) return null;
+    const amt = NZ.parseAmount(m[2]);
+    if (!amt) return null;
+    const om = PUSH_OP.exec(body);
+    let op = om ? opKind(om[1]) : 'misc';
+    const income = m[1] === '+' || PUSH_IN.test(body);
+    if (income && op === 'misc') op = 'topup';
+    // Описание: текст после суммы до точки; если там пусто — текст перед суммой без слова операции
+    const clean = (s) => s.replace(/(kaspi\s*gold|карт[аеуы]?\s*\*+\s*\d+|\*\d{4})/gi, ' ').replace(/^[\s.,:;—–-]+|[\s.,:;—–-]+$/g, '').replace(/\s{2,}/g, ' ').trim();
+    let raw = clean((body.slice(m.index + m[0].length).split(/[.!](?:\s|$)/)[0] || ''));
+    if (!raw) raw = clean(body.slice(0, m.index).replace(PUSH_OP, ' ').replace(/^.*\.\s/, ''));
+    const tx = NZ.makeTx(NZ.iso(new Date(n.time)), (income ? 1 : -1) * amt, raw || NZ.pushBank(n.pkg), op, 'push', rules);
+    tx.pushTime = n.time;
+    tx.bank = NZ.pushBank(n.pkg);
+    return tx;
+  };
+
+  // Новые операции из уведомлений без повторов: то же уведомление может прийти дважды (обновление),
+  // а одинаковые покупки подряд (два кофе) — это разные операции, если между ними больше 2 минут
+  NZ.mergePushes = function (existing, incoming) {
+    const pushes = existing.filter((t) => t.source === 'push');
+    const added = [];
+    incoming.forEach((t) => {
+      const same = (x) => x.amount === t.amount && NZ.merchantKey(x.raw) === NZ.merchantKey(t.raw) && Math.abs((x.pushTime || 0) - t.pushTime) < 120000;
+      if (pushes.some(same) || added.some(same)) return;
+      added.push(t);
+    });
+    return added;
+  };
+
+  // Выписка точнее уведомлений: операции из уведомлений, которые нашлись в выписке
+  // (та же сумма, дата ±1 день), убираем, чтобы не было двойного счёта
+  NZ.dropPushesCovered = function (existing, statementTxs) {
+    const pool = statementTxs.map((t) => ({ amount: t.amount, date: t.date, used: false }));
+    let removed = 0;
+    const kept = existing.filter((x) => {
+      if (x.source !== 'push') return true;
+      const hit = pool.find((p) => !p.used && p.amount === x.amount && Math.abs(NZ.daysBetween(p.date, x.date)) <= 1);
+      if (!hit) return true;
+      hit.used = true; removed++;
+      return false;
+    });
+    return { kept, removed };
+  };
+
   // Склейка: пропускаем дубликаты (дата + сумма + описание)
   NZ.mergeTxs = function (existing, incoming) {
     const seen = new Set(existing.map((t) => t.date + '|' + t.amount + '|' + NZ.merchantKey(t.raw)));

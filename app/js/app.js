@@ -543,10 +543,43 @@
     const hist = S.imports.slice().reverse();
     const last = S.imports.length ? S.imports[S.imports.length - 1] : null;
     const lastTx = last ? S.txs.filter((x) => x.importId === last.id).sort((a, b) => a.confidence - b.confidence).slice(0, 8) : [];
-    return '<header class="page-head"><h1 class="h2">' + esc(t('st.title')) + '</h1></header>' + importBlock(false) +
+    return '<header class="page-head"><h1 class="h2">' + esc(t('st.title')) + '</h1></header>' + pushCard() + importBlock(false) +
       (lastTx.length ? '<section class="card"><h2 class="h3">' + esc(t('st.txH')) + '</h2><p class="small muted">' + esc(t('st.fix')) + '</p><ul class="list">' + lastTx.map(txRow).join('') + '</ul><a class="link" href="#ops">' + esc(t('st.allOps')) + '</a></section>' : '') +
       (hist.length ? '<section class="card"><h2 class="h3">' + esc(t('st.hist')) + '</h2><ul class="list">' + hist.map((h) => '<li class="li">' + icon('file') + '<span class="grow"><b>' + esc(h.name) + '</b><span class="small muted">' + esc(t('c.ops', h.count) + ' · ' + NZ.fmtDate(h.from) + ' — ' + NZ.fmtDate(h.to)) + '</span></span><button type="button" class="btn btn-sm" data-a="rmImport" data-v="' + h.id + '">' + esc(t('st.rm')) + '</button></li>').join('') + '</ul></section>' : '');
   }
+  /* ---------- Траты из уведомлений банка (только в Android-приложении) ---------- */
+  const native = () => (window.NummazaNative && typeof window.NummazaNative.pullNotifications === 'function' ? window.NummazaNative : null);
+  function pushCard() {
+    const nb = native();
+    if (!nb) return '';
+    let on = false;
+    try { on = !!nb.notifAccess(); } catch (e) { on = false; }
+    const n = S.txs.filter((x) => x.source === 'push').length;
+    return '<section class="card" aria-labelledby="push-h"><div class="row-between"><h2 id="push-h" class="h3">' + esc(t('push.title')) + '</h2><span class="pill ' + (on ? 'pill-ok' : 'pill-warn') + '">' + esc(on ? t('push.on') : t('push.off')) + '</span></div>' +
+      '<p class="small muted">' + esc(t('push.text')) + '</p>' + (on && n ? '<p class="small">' + esc(t('push.count', t('c.ops', n))) + '</p>' : '') +
+      '<div class="row-gap wrap"><button type="button" class="btn btn-sm ' + (on ? '' : 'btn-primary') + '" data-a="pushSettings">' + esc(on ? t('push.manage') : t('push.enable')) + '</button></div>' +
+      '<p class="small muted">' + esc(t('push.note')) + '</p></section>';
+  }
+  // Забрать накопленные уведомления и добавить операции. Вызывается при возврате в приложение (MainActivity.onResume),
+  // при запуске и раз в 30 секунд, пока приложение открыто.
+  function pullPushes() {
+    const nb = native();
+    if (!nb || !S.account || !S.session || !S.profile.onboarded) return 0;
+    let items = [];
+    try { items = JSON.parse(nb.pullNotifications() || '[]'); } catch (e) { items = []; }
+    if (!Array.isArray(items) || !items.length) return 0;
+    const parsed = items.map((n) => NZ.parsePush(n, S.rules)).filter(Boolean);
+    const added = NZ.mergePushes(S.txs, parsed);
+    if (!added.length) return 0;
+    const before = snapshot();
+    S.txs = S.txs.concat(added).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    NZ.save(S); render();
+    toast(t('push.added', t('c.ops', added.length), added[added.length - 1].bank || 'Kaspi'), restore(before));
+    return added.length;
+  }
+  NZ.onNativeResume = () => { pullPushes(); if (ui.route === 'statements') render(); };
+  setInterval(() => { if (!document.hidden) pullPushes(); }, 30000);
+
   async function handleFile(file) {
     ui.importErr = null; ui.importResult = null;
     if (!file) return;
@@ -578,6 +611,8 @@
     if (!parsed.txs.length) { ui.importErr = t('st.errEmpty'); render(); return; }
     const before = snapshot();
     const id = NZ.uid();
+    // Операции, уже добавленные из уведомлений банка, заменяем строками выписки — без двойного счёта
+    if (!demo) S.txs = NZ.dropPushesCovered(S.txs, parsed.txs).kept;
     const { added, dups } = NZ.mergeTxs(S.txs, parsed.txs);
     added.forEach((x) => { x.importId = id; });
     S.txs = S.txs.concat(added);
@@ -893,6 +928,7 @@
       if (tp.action === 'home') return A.tipHide(el);
       go(tp.action);
     },
+    pushSettings() { const nb = native(); if (nb && nb.openNotifSettings) nb.openNotifSettings(); },
     tipHide(el) { const p = NZ.period(today(), S.profile.payday); const before = snapshot(); S.dismissed[el.dataset.v + ':' + p.start] = 1; NZ.save(S); render(); toast(t('tip.hide'), restore(before)); },
     openTx(el) { openSheet('tx', { id: el.dataset.v }); },
     setCat(el) {
@@ -1099,4 +1135,5 @@
   if (SERVER() && S.session && S.sync) setTimeout(() => NZ.sync.run(), 300);
   readRoute();
   render();
+  pullPushes(); // уведомления, накопленные пока приложение было закрыто
 })();

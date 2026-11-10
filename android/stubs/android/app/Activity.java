@@ -9,6 +9,7 @@ public class Activity extends Context {
     protected void onCreate(Bundle savedInstanceState) { throw new RuntimeException("stub"); }
     protected void onActivityResult(int requestCode, int resultCode, Intent data) { throw new RuntimeException("stub"); }
     protected void onSaveInstanceState(Bundle outState) { throw new RuntimeException("stub"); }
+    protected void onResume() { throw new RuntimeException("stub"); }
     public void onBackPressed() { throw new RuntimeException("stub"); }
     public void setContentView(View view) { throw new RuntimeException("stub"); }
     public void startActivity(Intent intent) { throw new RuntimeException("stub"); }

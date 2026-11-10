@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -97,8 +98,38 @@ public class MainActivity extends Activity {
         if (web != null) web.saveState(out);
     }
 
-    /** Мост для JavaScript: window.NummazaNative.share(text) */
+    // Вернулись в приложение (например, из настроек доступа или после покупки) — веб-приложение забирает новые уведомления
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (web != null) web.evaluateJavascript("window.NZ && NZ.onNativeResume && NZ.onNativeResume()", null);
+    }
+
+    /** Мост для JavaScript: window.NummazaNative.share(text), уведомления банков */
     public class Bridge {
+        /** Включён ли доступ к уведомлениям */
+        @JavascriptInterface
+        public boolean notifAccess() {
+            try { return BankInbox.enabled(MainActivity.this); } catch (Exception e) { return false; }
+        }
+
+        /** Открыть системный экран «Доступ к уведомлениям» */
+        @JavascriptInterface
+        public void openNotifSettings() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try { startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)); } catch (Exception ignored) { }
+                }
+            });
+        }
+
+        /** Накопленные уведомления банков (JSON-массив); очередь после этого пустая */
+        @JavascriptInterface
+        public String pullNotifications() {
+            try { return BankInbox.pull(MainActivity.this); } catch (Exception e) { return "[]"; }
+        }
+
         @JavascriptInterface
         public void share(final String text) {
             runOnUiThread(new Runnable() {

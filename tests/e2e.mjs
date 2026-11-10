@@ -253,6 +253,36 @@ ok((await text()).includes('пример данных'), 'пример данн�
 await page.getByRole('button', { name: 'Удалить пример' }).click();
 ok(await page.evaluate(() => window.NZ.app.state.txs.length) === 0, 'пример удаляется одной кнопкой');
 
+console.log('16. Траты из уведомлений банка (мост Android подменён)');
+await page.evaluate(() => {
+  const t0 = new Date('2026-11-04T12:00:00').getTime();
+  let queue = [
+    { pkg: 'kz.kaspi.mobile', title: 'Kaspi.kz', text: 'Покупка 2 500 ₸ MAGNUM ALMATY. Доступно 45 000 ₸', time: t0 },
+    { pkg: 'kz.kaspi.mobile', title: 'Kaspi.kz', text: 'Покупка 2 500 ₸ MAGNUM ALMATY. Доступно 45 000 ₸', time: t0 + 10000 },
+    { pkg: 'kz.kaspi.mobile', title: 'Kaspi.kz', text: 'Код подтверждения: 1234. Никому не сообщайте', time: t0 + 20000 },
+    { pkg: 'kz.kaspi.mobile', title: 'Kaspi.kz', text: 'Вам перевели 5 000 ₸ от Айгерим Б.', time: t0 + 30000 },
+    { pkg: 'kz.halyk.onlinebank', title: 'Homebank', text: 'Оплата 3 450,00 KZT GLOVO*KZ Остаток: 120 000,00 KZT', time: t0 + 40000 }
+  ];
+  let access = false;
+  window.NummazaNative = { notifAccess: () => access, openNotifSettings: () => { access = true; }, pullNotifications: () => { const r = JSON.stringify(queue); queue = []; return r; }, share() {} };
+  location.hash = 'statements';
+});
+await page.waitForSelector('#push-h');
+ok((await text()).includes('Выключено'), 'карточка уведомлений: доступ выключен');
+await page.locator('[data-a="pushSettings"]').click();
+await page.evaluate(() => window.NZ.onNativeResume());
+const pushTx = await page.evaluate(() => window.NZ.app.state.txs.filter((x) => x.source === 'push').map((x) => x.amount + ' ' + x.cat));
+ok(pushTx.length === 3, 'из 5 уведомлений добавлено 3 операции (повтор и код пропущены): ' + pushTx.join(', '));
+ok(pushTx.includes('-2500 groceries') && pushTx.includes('5000 transfer_in') && pushTx.includes('-3450 cafe'), 'суммы, знак и категории распознаны');
+ok((await page.locator('.toast-in').innerText()).includes('Из уведомлений'), 'тост об импорте с отменой');
+ok((await text()).includes('Включено'), 'после разрешения — «Включено»');
+await page.evaluate(() => {
+  const S = window.NZ.app.state;
+  const covered = window.NZ.dropPushesCovered(S.txs, [{ date: '2026-11-04', amount: -2500 }]);
+  window.__pushLeft = covered.kept.filter((x) => x.source === 'push').length;
+});
+ok(await page.evaluate(() => window.__pushLeft) === 2, 'строка выписки заменяет такую же операцию из уведомления');
+
 const missing = await page.evaluate(() => window.NZ.missing);
 ok(missing.length === 0, 'нет непереведённых строк' + (missing.length ? ': ' + missing.join(', ') : ''));
 ok(errors.length === 0, 'нет ошибок в консоли' + (errors.length ? ':\n    ' + errors.join('\n    ') : ''));
