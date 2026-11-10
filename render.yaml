@@ -4,6 +4,7 @@ services:
   - type: web
     name: nummaza
     runtime: node
+    branch: main      # сайт деплоится из main
     plan: free
     region: frankfurt
     buildCommand: cd server && npm ci --omit=dev
