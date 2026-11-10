@@ -9,7 +9,10 @@ let failed = 0; let passed = 0;
 const ok = (cond, name) => { if (cond) { passed++; console.log('  ✓', name); } else { failed++; console.log('  ✗', name); } };
 
 const db = await openDb({ pglite: true });
-const server = createApp(db, { authLimit: 1000 }).listen(0);
+const mails = [];
+const mailer = { enabled: true, async send(m) { mails.push(m); return { sent: true }; } };
+const ratesSource = async () => ({ date: '2026-11-04', USD: 447.5, EUR: 502.2, RUB: 5.41 });
+const server = createApp(db, { authLimit: 1000, mailer, ratesSource }).listen(0);
 const base = `http://127.0.0.1:${server.address().port}/`;
 const count = async (sql, p = []) => (await db.query(sql, p)).rows[0].n;
 
@@ -196,6 +199,86 @@ console.log('11. iPhone: подсказка «На экран Домой» и р
   await ctx.close();
   // Android Chrome / обычный компьютер — подсказки для iPhone нет
   ok(!(await D.page.locator('[data-a="iosHow"]').count()), 'не на iPhone подсказки нет');
+}
+
+console.log('12. Версия 1.3: почта для восстановления, сброс пароля, семья, рассрочки');
+{
+  const signup = async (dev, name, login, income) => {
+    await dev.page.fill('#a-name', name); await dev.page.fill('#a-login', login); await dev.page.fill('#a-pw', PW); await dev.page.check('#a-agree');
+    await dev.page.getByRole('button', { name: 'Создать аккаунт' }).click();
+    for (let i = 0; i < 3; i++) { await dev.page.waitForSelector('[data-a="onbNext"]'); if (i === 1) await dev.page.fill('#o-income', income); await dev.page.locator('[data-a="onbNext"]').click(); }
+    await dev.page.getByRole('button', { name: 'Попробовать на примере' }).click();
+    await dev.page.waitForSelector('.safe-v');
+  };
+  const E = await device('E');
+  await signup(E, 'Мама', '+7 702 111 22 33', '600000');
+  await E.page.evaluate(() => { location.hash = 'profile'; });
+  await E.page.fill('#rec-email', 'mama@test.kz');
+  await E.page.locator('[data-form="email"] button[type="submit"]').click();
+  await E.page.waitForSelector('text=Почта сохранена');
+  ok(await count("SELECT count(*)::int AS n FROM users WHERE email='mama@test.kz'") === 1, 'почта для восстановления сохранена на сервере');
+
+  // Семья: E создаёт, F вступает по коду
+  await E.page.evaluate(() => { location.hash = 'family'; });
+  await E.page.fill('#fam-name', 'Семья Б.');
+  await E.page.locator('[data-form="famCreate"] button[type="submit"]').click();
+  await E.page.waitForSelector('[data-a="famInvite"]');
+  await E.page.locator('[data-a="famInvite"]').click();
+  await E.page.waitForSelector('text=Код приглашения');
+  const code = (await E.page.locator('.note').innerText()).match(/: ([A-Z0-9]{6})\./)[1];
+  ok(/^[A-Z0-9]{6}$/.test(code), 'код приглашения показан: ' + code);
+  const F = await device('F');
+  await signup(F, 'Папа', '+7 702 444 55 66', '700000');
+  await F.page.evaluate(() => { location.hash = 'family'; });
+  await F.page.fill('#fam-code', 'ZZZZZZ');
+  await F.page.locator('[data-form="famJoin"] button[type="submit"]').click();
+  await F.page.waitForSelector('text=Код не подошёл');
+  ok(true, 'неверный код отклонён');
+  await F.page.fill('#fam-code', code.toLowerCase());
+  await F.page.locator('[data-form="famJoin"] button[type="submit"]').click();
+  await F.page.waitForSelector('[data-a="famInvite"]');
+  ok((await F.text()).includes('Мама') && (await F.text()).includes('Папа'), 'второй участник вступил, видит обоих');
+
+  // E отмечает трату как семейную в листе операции → F видит её в семейном бюджете
+  const spendId = await E.state(() => window.NZ.app.state.txs.find((x) => x.amount < 0 && x.date.startsWith('2026-11')).id);
+  await E.page.evaluate(() => { location.hash = 'home'; });
+  await E.page.waitForSelector('.safe-v');
+  await E.page.evaluate((id) => window.NZ.app.openSheet('tx', { id }), spendId);
+  await E.page.locator('[data-ch="txFam"]').check();
+  for (let i = 0; i < 40 && await count('SELECT count(*)::int AS n FROM family_records') === 0; i++) await new Promise((r) => setTimeout(r, 250));
+  ok(await count('SELECT count(*)::int AS n FROM family_records') === 1, 'семейная трата ушла на сервер (личные — нет)');
+  await F.page.reload();
+  await F.page.evaluate(() => { location.hash = 'family'; });
+  await F.page.waitForSelector('[data-a="famInvite"]');
+  ok((await F.state(() => window.NZ.app.state.family.records.length)) === 1, 'второй участник видит общую трату');
+  await E.page.evaluate(() => window.NZ.app.closeSheet && window.NZ.app.closeSheet());
+
+  // Рассрочка синхронизируется на другое устройство того же аккаунта
+  await E.page.evaluate(() => { const s = window.NZ.app.state; s.loans.push({ id: 'ln1', name: 'Диван 0-0-12', bank: 'Kaspi', kind: 'inst', monthly: 30000, left: 8, next: '2026-11-20', createdAt: '2026-11-04' }); window.NZ.app.commit(); });
+  await E.sync();
+  ok(await count("SELECT count(*)::int AS n FROM records WHERE kind='loan'") === 1, 'рассрочка сохранена на сервере');
+
+  // Забыли пароль: код приходит на почту, новый пароль, вход
+  await E.page.evaluate(() => { location.hash = 'profile'; });
+  await E.page.getByRole('button', { name: 'Выйти' }).click();
+  await E.page.waitForSelector('#a-pw');
+  if (await E.page.locator('[data-a="forgot"]').count() === 0) await E.page.getByRole('button', { name: 'Войти', exact: true }).first().click();
+  await E.page.locator('[data-a="forgot"]').click();
+  await E.page.fill('#fg-login', '+7 702 111 22 33');
+  await E.page.locator('[data-form="forgot1"] button[type="submit"]').click();
+  await E.page.waitForSelector('#fg-code');
+  ok(mails.length === 1 && mails[0].to === 'mama@test.kz', 'письмо с кодом отправлено на почту восстановления');
+  const mailCode = mails[0].text.match(/\b(\d{6})\b/)[1];
+  await E.page.fill('#fg-code', '000000'); await E.page.fill('#fg-pw', 'novyiparol7');
+  await E.page.locator('[data-form="forgot2"] button[type="submit"]').click();
+  await E.page.waitForSelector('text=Неверный код');
+  ok((await E.page.locator('#sheet').innerText()).includes('Осталось попыток'), 'неверный код: показано, сколько попыток осталось');
+  await E.page.fill('#fg-code', mailCode); await E.page.fill('#fg-pw', 'novyiparol7');
+  await E.page.locator('[data-form="forgot2"] button[type="submit"]').click();
+  await E.page.waitForSelector('.safe-v');
+  ok((await E.page.locator('.toast-in').innerText()).includes('Пароль изменён'), 'новый пароль установлен, вход выполнен');
+  ok(await E.state(() => window.NZ.app.state.loans.some((l) => l.name === 'Диван 0-0-12')), 'после сброса пароля данные (и рассрочка) на месте');
+  await E.ctx.close(); await F.ctx.close();
 }
 
 ok(errors.length === 0, 'нет ошибок в консоли' + (errors.length ? ':\n    ' + errors.join('\n    ') : ''));

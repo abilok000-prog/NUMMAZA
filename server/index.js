@@ -6,6 +6,7 @@
 //   ALLOW_FILE_ORIGIN — 0, чтобы запретить запросы из Android-приложения (origin null)
 import { openDb } from './db.js';
 import { createApp } from './app.js';
+import { createPushSender, pushTick } from './routes/push.js';
 
 const url = process.env.DATABASE_URL;
 if (!url && !process.env.PGLITE && !process.env.PGLITE_DIR) {
@@ -13,7 +14,11 @@ if (!url && !process.env.PGLITE && !process.env.PGLITE_DIR) {
   process.exit(1);
 }
 const db = await openDb(url ? { url } : { pglite: process.env.PGLITE_DIR || true });
+// Push-уведомления сайта: с ключами VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY раз в минуту отправляем наступившие напоминания
+const pushSender = await createPushSender();
+if (pushSender) setInterval(() => pushTick(db, pushSender).catch((e) => console.warn('push tick', e.message)), 60_000).unref();
 const app = createApp(db, {
+  pushSender,
   allowedOrigins: (process.env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean),
   allowFileOrigin: process.env.ALLOW_FILE_ORIGIN !== '0'
 });

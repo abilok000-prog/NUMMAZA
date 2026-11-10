@@ -38,3 +38,62 @@ CREATE TABLE IF NOT EXISTS records (
   PRIMARY KEY (user_id, kind, rec_id)
 );
 CREATE INDEX IF NOT EXISTS records_user_seq_idx ON records(user_id, seq);
+
+-- 1.3: почта для восстановления пароля
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email text;
+
+-- Коды сброса пароля: в базе только хеш кода, 15 минут, не больше 5 попыток
+CREATE TABLE IF NOT EXISTS password_resets (
+  user_id    uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  code_hash  text NOT NULL,
+  expires    timestamptz NOT NULL,
+  attempts   integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Push-уведомления на сайте (iPhone «На экран Домой», браузеры): подписки и запланированные напоминания
+CREATE TABLE IF NOT EXISTS push_subs (
+  id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint   text NOT NULL UNIQUE,
+  p256dh     text NOT NULL,
+  auth       text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS push_items (
+  sub_id  uuid NOT NULL REFERENCES push_subs(id) ON DELETE CASCADE,
+  item_id text NOT NULL,
+  at      timestamptz NOT NULL,
+  title   text NOT NULL,
+  body    text NOT NULL,
+  sent_at timestamptz,
+  PRIMARY KEY (sub_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS push_items_due_idx ON push_items(at) WHERE sent_at IS NULL;
+
+-- Семейный бюджет: семья, участники (не больше одной семьи на человека), приглашения, общие траты
+CREATE TABLE IF NOT EXISTS families (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name        text NOT NULL,
+  owner       uuid REFERENCES users(id) ON DELETE SET NULL,
+  month_limit bigint NOT NULL DEFAULT 0,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS family_members (
+  user_id   uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+  joined_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS family_invites (
+  code      text PRIMARY KEY,
+  family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+  expires   timestamptz NOT NULL
+);
+CREATE TABLE IF NOT EXISTS family_records (
+  family_id  uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+  user_id    uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  rec_id     text NOT NULL,
+  date       text NOT NULL,
+  data       jsonb NOT NULL,
+  PRIMARY KEY (family_id, user_id, rec_id)
+);

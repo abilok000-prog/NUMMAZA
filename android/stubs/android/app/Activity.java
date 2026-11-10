@@ -20,4 +20,7 @@ public class Activity extends Context {
     public void startActivity(Intent intent) { throw new RuntimeException("stub"); }
     public void startActivityForResult(Intent intent, int requestCode) { throw new RuntimeException("stub"); }
     public final void runOnUiThread(Runnable action) { throw new RuntimeException("stub"); }
+    public final void requestPermissions(String[] permissions, int requestCode) { throw new RuntimeException("stub"); }
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) { throw new RuntimeException("stub"); }
+    public boolean shouldShowRequestPermissionRationale(String permission) { throw new RuntimeException("stub"); }
 }

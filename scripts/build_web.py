@@ -21,7 +21,7 @@ api = next((a.split('=', 1)[1] for a in sys.argv if a.startswith('--api=')), '')
 if artifact and api:
     sys.exit('На claude.ai страница не может обращаться к внешнему серверу: --api только для обычной сборки')
 config = "window.NZ = window.NZ || {};\nNZ.API_URL = " + repr(api.rstrip('/')) + ";\n"
-scripts = ['vendor/pdf.min.js', 'vendor/pdf.worker.min.js', 'js/core.js', 'js/i18n.js', 'js/parser.js', 'js/numa.js', 'js/api.js', 'js/sync.js', 'js/app.js']
+scripts = ['vendor/pdf.min.js', 'vendor/pdf.worker.min.js', 'js/core.js', 'js/i18n.js', 'js/i18n-more.js', 'js/money.js', 'js/parser.js', 'js/numa.js', 'js/api.js', 'js/sync.js', 'js/more.js', 'js/app.js']
 fonts = '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;600;700;800&display=swap">'
 head = ('<title>NUMMAZA</title>\n<meta name="theme-color" content="#F4F5F7">\n'
         '<meta name="description" content="Бюджет-ассистент: сколько можно потратить сегодня, конверты, цели и разбор выписки Kaspi.">\n'

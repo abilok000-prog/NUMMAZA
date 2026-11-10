@@ -1,5 +1,7 @@
 // Регистрация, вход, обновление токенов, выход, профиль аккаунта, удаление аккаунта.
 import express from 'express';
+import crypto from 'node:crypto';
+import { resetEmail } from '../mail.js';
 import { hashPassword, verifyPassword, DUMMY_HASH, newToken, sha256, normLogin, validPassword } from '../security.js';
 
 const ACCESS_MS = 15 * 60 * 1000;           // 15 минут
@@ -20,7 +22,12 @@ async function issueSession(db, userId, userAgent, sessionId) {
   return { accessToken: access, refreshToken: refresh, accessExpiresIn: ACCESS_MS / 1000 };
 }
 
-const publicUser = (u) => ({ id: u.id, name: u.name, login: u.login, createdAt: u.created_at });
+const publicUser = (u) => ({ id: u.id, name: u.name, login: u.login, email: u.email || (u.login.includes('@') ? u.login : null), createdAt: u.created_at });
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const RESET_MS = 15 * 60 * 1000;
+const RESET_GAP_MS = 60 * 1000;     // не чаще одного письма в минуту
+const RESET_TRIES = 5;
+const codeHash = (userId, code) => sha256(userId + ':' + code);
 
 // Проверка access-токена: кладёт req.userId и req.sessionId
 export function requireAuth(db) {
@@ -35,8 +42,9 @@ export function requireAuth(db) {
   };
 }
 
-export function authRouter(db) {
+export function authRouter(db, opts = {}) {
   const r = express.Router();
+  const mailer = opts.mailer;
 
   r.post('/auth/register', async (req, res) => {
     const { name, login, password } = req.body || {};
@@ -107,6 +115,59 @@ export function authRouter(db) {
     const { rows } = await db.query('SELECT * FROM users WHERE id=$1', [req.userId]);
     if (!rows.length) return res.status(401).json({ error: 'unauthorized' });
     res.json({ user: publicUser(rows[0]) });
+  });
+
+  // Почта для восстановления пароля (для входа по телефону). Пустая строка — убрать.
+  r.put('/me/email', requireAuth(db), async (req, res) => {
+    const raw = (req.body || {}).email;
+    const email = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+    if (email && (!EMAIL_RE.test(email) || email.length > 120)) return res.status(400).json({ error: 'validation', fields: { email: 'invalid' } });
+    const { rows } = await db.query('UPDATE users SET email=$2 WHERE id=$1 RETURNING *', [req.userId, email || null]);
+    res.json({ user: publicUser(rows[0]) });
+  });
+
+  // Забыли пароль: код на почту. Ответ всегда одинаковый — по нему не узнать, есть ли такой аккаунт.
+  r.post('/auth/forgot', async (req, res) => {
+    const { login, lang } = req.body || {};
+    const lg = normLogin(login);
+    if (!lg) return res.status(400).json({ error: 'validation', fields: { login: 'invalid' } });
+    const { rows } = await db.query('SELECT * FROM users WHERE login=$1', [lg]);
+    const user = rows[0];
+    const email = user && (user.email || (user.login.includes('@') ? user.login : null));
+    if (user && email && mailer) {
+      const prev = await db.query('SELECT created_at FROM password_resets WHERE user_id=$1', [user.id]);
+      const fresh = prev.rows[0] && Date.now() - new Date(prev.rows[0].created_at).getTime() < RESET_GAP_MS;
+      if (!fresh) {
+        const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+        await db.query(`INSERT INTO password_resets(user_id, code_hash, expires, attempts, created_at) VALUES ($1,$2,$3,0,now())
+          ON CONFLICT (user_id) DO UPDATE SET code_hash=EXCLUDED.code_hash, expires=EXCLUDED.expires, attempts=0, created_at=now()`,
+          [user.id, codeHash(user.id, code), new Date(Date.now() + RESET_MS)]);
+        const m = resetEmail(['ru', 'kk', 'en'].includes(lang) ? lang : 'ru', user.name, code);
+        try { await mailer.send({ to: email, ...m }); } catch (e) { console.error('mail', e.message); return res.status(502).json({ error: 'mail_failed' }); }
+      }
+    }
+    res.json({ ok: true, mail: !!(mailer && mailer.enabled) });
+  });
+
+  // Новый пароль по коду из письма: все старые сессии закрываются, устройство сразу входит
+  r.post('/auth/reset', async (req, res) => {
+    const { login, code, password } = req.body || {};
+    const lg = normLogin(login);
+    if (!lg || typeof code !== 'string' || !/^\d{6}$/.test(code.trim())) return res.status(400).json({ error: 'bad_code' });
+    if (!validPassword(password)) return res.status(400).json({ error: 'validation', fields: { password: 'invalid' } });
+    const { rows } = await db.query('SELECT u.*, r.code_hash, r.expires, r.attempts FROM users u JOIN password_resets r ON r.user_id=u.id WHERE u.login=$1', [lg]);
+    const u = rows[0];
+    if (!u || new Date(u.expires) < new Date() || u.attempts >= RESET_TRIES) return res.status(400).json({ error: 'code_expired' });
+    const ok = crypto.timingSafeEqual(Buffer.from(codeHash(u.id, code.trim())), Buffer.from(u.code_hash));
+    if (!ok) {
+      await db.query('UPDATE password_resets SET attempts=attempts+1 WHERE user_id=$1', [u.id]);
+      return res.status(400).json({ error: 'bad_code', attemptsLeft: RESET_TRIES - u.attempts - 1 });
+    }
+    await db.query('UPDATE users SET pass_hash=$2, failed_logins=0, locked_until=NULL WHERE id=$1', [u.id, await hashPassword(password)]);
+    await db.query('DELETE FROM password_resets WHERE user_id=$1', [u.id]);
+    await db.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL', [u.id]);
+    const tokens = await issueSession(db, u.id, req.get('user-agent'));
+    res.json({ user: publicUser(u), ...tokens });
   });
 
   // Удаление аккаунта: сессии и все записи удаляются каскадно

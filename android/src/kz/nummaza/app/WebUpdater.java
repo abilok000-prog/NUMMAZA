@@ -38,7 +38,7 @@ import java.util.regex.Pattern;
  */
 final class WebUpdater {
     /** Версия нативной части. Сервер не пришлёт веб-код, которому нужна более новая (minNative). */
-    static final int NATIVE = 1;
+    static final int NATIVE = 2; // 2 — версия 1.3: файлы, отпечаток, напоминания, виджет
     private static final String PREFIX = "file:///android_asset/www/";
     private static final long CHECK_EVERY_MS = 30L * 60 * 1000;
     private static final long MAX_TOTAL = 30L * 1024 * 1024;

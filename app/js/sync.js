@@ -14,6 +14,8 @@
     s.txs.forEach((x) => m.set('tx:' + x.id, x));
     s.goals.forEach((x) => m.set('goal:' + x.id, x));
     s.imports.forEach((x) => m.set('import:' + x.id, x));
+    (s.loans || []).forEach((x) => m.set('loan:' + x.id, x));
+    (s.accounts || []).forEach((x) => m.set('acc:' + x.id, x));
     Object.keys(s.envelopes).forEach((c) => m.set('envelope:' + c, { limit: s.envelopes[c] }));
     Object.keys(s.rules).forEach((k) => m.set('rule:' + k, { cat: s.rules[k] }));
     const p = s.profile;
@@ -67,8 +69,9 @@
       const after = c.deleted ? undefined : JSON.stringify(c.data);
       if (before === after) return;
       changed++;
-      const list = { tx: 'txs', goal: 'goals', import: 'imports' }[c.kind];
+      const list = { tx: 'txs', goal: 'goals', import: 'imports', loan: 'loans', acc: 'accounts' }[c.kind];
       if (list) {
+        if (!s[list]) s[list] = [];
         const i = s[list].findIndex((x) => x.id === c.id);
         if (c.deleted) { if (i >= 0) s[list].splice(i, 1); }
         else { const v = Object.assign({}, c.data, { id: c.id }); if (i >= 0) s[list][i] = v; else s[list].push(v); }

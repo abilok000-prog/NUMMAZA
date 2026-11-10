@@ -4,7 +4,7 @@
 import express from 'express';
 import { requireAuth } from './auth.js';
 
-export const KINDS = new Set(['tx', 'goal', 'import', 'envelope', 'rule', 'profile']);
+export const KINDS = new Set(['tx', 'goal', 'import', 'envelope', 'rule', 'profile', 'loan', 'acc']);
 const MAX_CHANGES = 1000;
 const MAX_RECORD_BYTES = 20 * 1024;
 const PAGE = 2000;

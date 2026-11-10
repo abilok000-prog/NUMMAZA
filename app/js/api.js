@@ -82,6 +82,10 @@
       await authed('/me', { method: 'DELETE' });
       store(null);
     },
-    sync(body) { return authed('/sync', { method: 'POST', body }); }
+    sync(body) { return authed('/sync', { method: 'POST', body }); },
+    // Остальные запросы (семья, почта, уведомления, курсы): call — с токеном, pub — без
+    call(path, opts) { return authed(path, opts); },
+    pub(path, opts) { return raw(path, opts); },
+    adopt(r) { store(r); return r.user; } // вход по ответу сервера (после сброса пароля)
   };
 })();

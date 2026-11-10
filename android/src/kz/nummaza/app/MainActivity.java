@@ -1,10 +1,20 @@
 package kz.nummaza.app;
 
 import android.app.Activity;
+import android.app.NotificationManager;
+import android.content.ContentValues;
+import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.hardware.biometrics.BiometricManager;
+import android.hardware.biometrics.BiometricPrompt;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.CancellationSignal;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
@@ -17,7 +27,10 @@ import android.webkit.WebViewClient;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.concurrent.Executor;
 
 /**
  * NUMMAZA для Android: веб-приложение из assets/www открывается во встроенном WebView.
@@ -27,6 +40,11 @@ import java.util.Base64;
  */
 public class MainActivity extends Activity {
     private static final int PICK_FILE = 41;
+    private static final int REQ_NOTIF = 42;
+    private static final int SAVE_FILE = 43;
+    private static final String POST_NOTIFICATIONS = "android.permission.POST_NOTIFICATIONS";
+    /** Android 8–9: файл ждёт, пока пользователь выберет, куда сохранить */
+    private volatile byte[] pendingSave;
     private WebView web;
     private static final int MAX_SHARED = 10 * 1024 * 1024; // как в веб-части: до 10 МБ
     private ValueCallback<Uri[]> fileCallback;
@@ -171,8 +189,35 @@ public class MainActivity extends Activity {
         return b.append('"').toString();
     }
 
+    /** Выполнить JavaScript в странице (из любого потока) */
+    private void js(final String code) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() { if (web != null) web.evaluateJavascript("window.NZ && (" + code + ")", null); }
+        });
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (requestCode != REQ_NOTIF) return;
+        getSharedPreferences("reminders", MODE_PRIVATE).edit().putString("asked", "1").apply();
+        js("NZ.onNotifPermission && NZ.onNotifPermission()");
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == SAVE_FILE) {
+            byte[] bytes = pendingSave;
+            pendingSave = null;
+            boolean ok = false;
+            if (resultCode == RESULT_OK && data != null && data.getData() != null && bytes != null) {
+                try (OutputStream out = getContentResolver().openOutputStream(data.getData())) {
+                    if (out != null) { out.write(bytes); ok = true; }
+                } catch (Exception ignored) { }
+            }
+            if (resultCode == RESULT_OK) js("NZ.onFileSaved && NZ.onFileSaved(" + ok + ")");
+            return;
+        }
         if (requestCode == PICK_FILE && fileCallback != null) {
             Uri[] result = null;
             if (resultCode == RESULT_OK && data != null && data.getData() != null) result = new Uri[] { data.getData() };
@@ -200,6 +245,8 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (web != null) web.evaluateJavascript("window.NZ && NZ.onNativeResume && NZ.onNativeResume()", null);
+        // Могли включить уведомления в настройках — веб-приложение обновит карточку и план напоминаний
+        if (web != null) web.evaluateJavascript("window.NZ && NZ.onNotifPermission && NZ.onNotifPermission()", null);
         if (updater != null) updater.checkAsync(false, notifyUpdate);
     }
 
@@ -261,6 +308,144 @@ public class MainActivity extends Activity {
             String j = sharedJson;
             sharedJson = null;
             return j;
+        }
+
+        /* ---------- 1.3: файлы, отпечаток, напоминания, виджет ---------- */
+
+        /** Сохранить файл (выгрузка для Excel). Android 10+: сразу в «Загрузки» → "downloads".
+         *  Android 8–9: системный диалог «Сохранить как» → "picker" (итог придёт в NZ.onFileSaved). Ошибка → "". */
+        @JavascriptInterface
+        public String saveFile(String name, String mime, String content) {
+            final String safe = (name == null ? "nummaza.csv" : name).replaceAll("[^A-Za-z0-9._-]", "_");
+            final String type = mime == null || mime.isEmpty() ? "text/csv" : mime;
+            final byte[] bytes = (content == null ? "" : content).getBytes(StandardCharsets.UTF_8);
+            if (bytes.length > MAX_SHARED) return "";
+            if (Build.VERSION.SDK_INT >= 29) {
+                try {
+                    ContentValues v = new ContentValues();
+                    v.put(MediaStore.MediaColumns.DISPLAY_NAME, safe);
+                    v.put(MediaStore.MediaColumns.MIME_TYPE, type);
+                    v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                    Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                    if (uri == null) return "";
+                    try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                        if (out == null) return "";
+                        out.write(bytes);
+                    }
+                    return "downloads";
+                } catch (Exception e) {
+                    return "";
+                }
+            }
+            pendingSave = bytes;
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    i.setType(type);
+                    i.putExtra(Intent.EXTRA_TITLE, safe);
+                    try { startActivityForResult(i, SAVE_FILE); } catch (Exception e) { pendingSave = null; js("NZ.onFileSaved && NZ.onFileSaved(false)"); }
+                }
+            });
+            return "picker";
+        }
+
+        /** Есть ли на телефоне отпечаток / распознавание лица (Android 10+) */
+        @JavascriptInterface
+        public boolean bioAvailable() {
+            if (Build.VERSION.SDK_INT < 29) return false;
+            try {
+                BiometricManager bm = getSystemService(BiometricManager.class);
+                return bm != null && bm.canAuthenticate() == BiometricManager.BIOMETRIC_SUCCESS;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        /** Системный запрос отпечатка; результат — NZ.onBio(true|false) */
+        @JavascriptInterface
+        public void bioAuth(final String title, final String cancel) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (Build.VERSION.SDK_INT < 28) { js("NZ.onBio && NZ.onBio(false)"); return; }
+                    try {
+                        Executor ex = getMainExecutor();
+                        BiometricPrompt p = new BiometricPrompt.Builder(MainActivity.this)
+                            .setTitle(title == null || title.isEmpty() ? "NUMMAZA" : title)
+                            .setNegativeButton(cancel == null || cancel.isEmpty() ? "Отмена" : cancel, ex, new DialogInterface.OnClickListener() {
+                                @Override
+                                public void onClick(DialogInterface d, int which) { js("NZ.onBio && NZ.onBio(false)"); }
+                            })
+                            .build();
+                        p.authenticate(new CancellationSignal(), ex, new BiometricPrompt.AuthenticationCallback() {
+                            @Override
+                            public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) { js("NZ.onBio && NZ.onBio(true)"); }
+
+                            @Override
+                            public void onAuthenticationError(int code, CharSequence msg) { js("NZ.onBio && NZ.onBio(false)"); }
+                        });
+                    } catch (Exception e) {
+                        js("NZ.onBio && NZ.onBio(false)");
+                    }
+                }
+            });
+        }
+
+        /** Разрешены ли уведомления: "granted" | "default" (ещё не спрашивали) | "denied" */
+        @JavascriptInterface
+        public String notifPermission() {
+            try {
+                if (Build.VERSION.SDK_INT >= 33) {
+                    if (checkSelfPermission(POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return "granted";
+                    boolean asked = "1".equals(getSharedPreferences("reminders", MODE_PRIVATE).getString("asked", ""));
+                    return asked && !shouldShowRequestPermissionRationale(POST_NOTIFICATIONS) ? "denied" : "default";
+                }
+                NotificationManager nm = getSystemService(NotificationManager.class);
+                return nm == null || nm.areNotificationsEnabled() ? "granted" : "denied";
+            } catch (Exception e) {
+                return "granted";
+            }
+        }
+
+        /** Попросить разрешение на уведомления (Android 13+), а если уже отказали — открыть настройки уведомлений приложения */
+        @JavascriptInterface
+        public void requestNotifPermission() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    String st = notifPermission();
+                    if ("granted".equals(st)) { js("NZ.onNotifPermission && NZ.onNotifPermission()"); return; }
+                    if (Build.VERSION.SDK_INT >= 33 && "default".equals(st)) {
+                        requestPermissions(new String[] { POST_NOTIFICATIONS }, REQ_NOTIF);
+                        return;
+                    }
+                    try {
+                        Intent i = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                        i.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+                        startActivity(i);
+                    } catch (Exception ignored) { }
+                }
+            });
+        }
+
+        /** План напоминаний из веб-приложения: JSON-массив {id, at, title, body} */
+        @JavascriptInterface
+        public void setReminders(String json) {
+            try { Reminders.schedule(getApplicationContext(), json); } catch (Exception ignored) { }
+        }
+
+        /** Уведомление сразу (конверт заполнен на 80% и т. п.) */
+        @JavascriptInterface
+        public void notifyNow(String title, String body) {
+            try { Reminders.show(getApplicationContext(), "now:" + title, title, body); } catch (Exception ignored) { }
+        }
+
+        /** Данные для виджета «Сегодня можно»: {label, value, sub} */
+        @JavascriptInterface
+        public void setWidget(String json) {
+            try { BalanceWidget.save(getApplicationContext(), json); } catch (Exception ignored) { }
         }
 
         @JavascriptInterface

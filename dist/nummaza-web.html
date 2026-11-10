@@ -392,6 +392,23 @@ select { appearance: auto; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
+/* 1.3: PIN-код, кошелёк, семья */
+.lock-in { max-width: 360px; text-align: center; gap: 14px; }
+.lock-in .brand-row { justify-content: center; color: var(--accent); }
+.pin-dots { display: flex; justify-content: center; gap: 16px; margin: 8px 0; }
+.pin-dots i { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line); transition: background .15s, border-color .15s; }
+.pin-dots i.on { background: var(--accent); border-color: var(--accent); }
+.pin-dots.is-err i { border-color: var(--warn-fg, #c0392b); animation: pin-shake .3s; }
+@keyframes pin-shake { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+.pin-pad { width: 100%; max-width: 300px; margin: 0 auto; gap: 12px; }
+.pin-pad button { min-height: 64px; border-radius: 50%; aspect-ratio: 1; max-width: 76px; justify-self: center; width: 100%; }
+.lock-in .row-between { width: 100%; max-width: 300px; margin: 0 auto; }
+.pin-pad span { display: block; }
+.acc-ic { width: 36px; height: 36px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; background: var(--surface-2, rgba(11,110,100,.1)); font-size: 18px; flex: none; }
+.loan .bar { margin: 2px 0; }
+.bar-light { background: rgba(255,255,255,.2); }
+.bar-light i { background: #fff; }
+
 </style>
 </head>
 <body>
@@ -458,7 +475,11 @@ NZ.API_URL = '';
   const NZ = (window.NZ = window.NZ || {});
 
   // Версия приложения. При выпуске новой версии добавьте в i18n.js запись news.vX_Y (для 1.3 — news.v1_3) — экран «Что нового» покажется один раз.
-  NZ.VERSION = '1.2';
+  NZ.VERSION = '1.3';
+
+  // Точки расширения: новые экраны, листы и действия регистрируются из money.js / more.js,
+  // app.js их подхватывает (маршруты, кнопки data-a, формы data-form, карточки на «Обзоре» и в «Профиле»).
+  NZ.ext = { views: {}, sheets: {}, actions: {}, forms: {}, change: {}, input: {}, homeCards: [], profileCards: [], addExtras: [], addApply: [], onSaved: [], lock: null };
 
   /* ---------- Категории ---------- */
   // color — для диаграмм и полосок (читаются на светлом и тёмном фоне)
@@ -544,6 +565,10 @@ NZ.API_URL = '';
       draft: null,
       dismissed: {},
       demo: false,
+      loans: [],     // рассрочки и кредиты (money.js)
+      accounts: [],  // счета, наличные, депозиты (money.js)
+      lock: null,    // PIN-код и вход по отпечатку — только на этом устройстве, не синхронизируется
+      family: null,  // семейный бюджет: копия с сервера
       sync: null // { cursor, outbox, lastAt, error, clock } — только при входе через сервер
     };
   };
@@ -558,6 +583,7 @@ NZ.API_URL = '';
   };
   NZ.save = function (s) {
     if (NZ.syncTrack) NZ.syncTrack(s); // изменения → очередь синхронизации (sync.js)
+    NZ.ext.onSaved.forEach((f) => { try { f(s); } catch (e) { console.warn('onSaved', e); } });
     try { localStorage.setItem(KEY, JSON.stringify(s)); return true; } catch (e) { return false; }
   };
   NZ.wipe = function () { try { localStorage.removeItem(KEY); } catch (e) { /* хранилище недоступно */ } };
@@ -614,7 +640,9 @@ NZ.API_URL = '';
     const p = NZ.period(today, state.profile.payday);
     const rec = NZ.recurring(state.txs, today);
     const list = [];
+    const hasLoans = (state.loans || []).length > 0;
     rec.forEach((r) => {
+      if (hasLoans && r.cat === 'installments') return; // рассрочки заданы вручную — берём их график
       // Дата платежа в текущем периоде
       const ymNow = NZ.ym(today);
       const candidates = [ymNow, NZ.addMonths(ymNow, 1)].map((ym) => ym + '-' + String(Math.min(r.day, NZ.daysInMonth(ym))).padStart(2, '0'));
@@ -624,6 +652,7 @@ NZ.API_URL = '';
       if (paidThisPeriod && due.slice(0, 7) === NZ.ym(today) && r.last >= p.start) return;
       list.push({ merchant: r.merchant, cat: r.cat, amount: r.perMonth, date: due });
     });
+    if (NZ.loanDuesIn) NZ.loanDuesIn(state, today, p.end).forEach((d) => list.push({ merchant: d.loan.name, cat: 'installments', amount: d.amount, date: d.date, loan: d.loan.id }));
     return list.sort((a, b) => (a.date < b.date ? -1 : 1));
   };
 
@@ -1018,6 +1047,400 @@ NZ.API_URL = '';
     return withWd ? s + ', ' + NZ.t('wdFull')[NZ.weekdayMon0(iso)] : s;
   };
   NZ.monthName = (ym) => NZ.t('months')[+ym.slice(5) - 1];
+})();
+
+</script>
+<script>
+/* NUMMAZA 1.3 — тексты новых экранов: кошелёк, рассрочки, экспорт, PIN, напоминания, восстановление пароля, семья.
+   Добавляются к словарям из i18n.js. Казахский перевод перед релизом должен проверить носитель языка. */
+(function () {
+  'use strict';
+  const NZ = window.NZ;
+  const plural = (n, one, few, many) => { const a = Math.abs(n) % 100; const b = a % 10; return a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many; };
+
+  const ru = {
+    prof: { more: 'Ещё', version: 'NUMMAZA 1.3 · данные хранятся на устройстве' },
+    wal: { title: 'Кошелёк', net: 'Мои деньги за вычетом долгов', netSub: (a, d) => 'На счетах ' + a + ' · рассрочки и кредиты ' + d, emptyHome: 'Счета, наличные, валюта и рассрочки Kaspi Red, 0-0-12 в одном месте. Платежи по рассрочкам вычитаются из «Сегодня можно».', open: 'Открыть', onAccounts: 'На счетах' },
+    acc: {
+      title: 'Счета', add: 'Добавить', new: 'Новый счёт', empty: 'Добавьте карту, наличные или депозит — увидите, сколько у вас денег всего, в том числе в долларах и рублях.',
+      ic: { card: '💳', cash: '💵', deposit: '🏦', other: '👛' }, type: { card: 'Карта', cash: 'Наличные', deposit: 'Депозит', other: 'Другое' },
+      rates: (d, usd, eur, rub) => 'Курс НБ РК на ' + d + ': $ ' + usd + ' · € ' + eur + ' · ₽ ' + rub, ratesOld: 'сегодня, примерно',
+      name: 'Название', namePh: 'Kaspi Gold', typeL: 'Тип', cur: 'Валюта', balance: (c) => 'Сколько сейчас, ' + c,
+      balHint: 'Дальше остаток меняется сам по тратам и доходам, которые вы отмечаете с этого счёта.', balHintCur: 'Валютный счёт: остаток меняйте вручную, в тенге он пересчитывается по курсу.',
+      del: 'Удалить счёт', deleted: 'Счёт удалён', errName: 'Введите название', from: 'Счёт', none: 'Без счёта'
+    },
+    loan: {
+      title: 'Рассрочки и кредиты', add: 'Добавить', new: 'Новая рассрочка', empty: 'Добавьте рассрочку Kaspi Red, 0-0-12 или кредит — NUMMAZA напомнит о платеже и заранее отложит деньги в «Сегодня можно».',
+      perMonth: ' в мес.', done: 'Выплачено', left: (n, s) => 'Осталось ' + n + ' ' + plural(n, 'платёж', 'платежа', 'платежей') + ' · ' + s, next: (d) => 'следующий ' + d,
+      sum: (m, l) => 'Каждый месяц ' + m + ' · всего осталось ' + l, note: 'Платёж считается оплаченным в день по графику. Если погасили досрочно — измените число платежей.',
+      nextHome: (n, d, a) => 'Ближайший: ' + n + ', ' + d + ' — ' + a,
+      kind: { inst: 'Рассрочка', credit: 'Кредит' }, name: 'Что купили / название', namePh: 'iPhone 0-0-12', bank: 'Банк', monthly: 'Платёж в месяц, ₸', count: 'Осталось платежей', nextDate: 'Дата ближайшего платежа',
+      hint: 'Дальше даты считаются сами: раз в месяц в тот же день.', del: 'Удалить', deleted: 'Рассрочка удалена',
+      errName: 'Введите название', errMonthly: 'Введите сумму платежа', errLeft: 'Сколько платежей осталось (1–600)', saved: (v) => 'Сохранено. Сегодня можно: ' + v
+    },
+    exp: {
+      btn: 'Скачать операции в Excel', cols: ['Дата', 'Сумма, ₸', 'Категория', 'Описание', 'Как в выписке', 'Счёт', 'Источник', 'Не трата', 'Семейная'],
+      src: { manual: 'Вручную', push: 'Уведомление банка', statement: 'Выписка' }, yes: 'да',
+      none: 'Пока нечего выгружать — нет операций', saved: (n) => 'Файл скачан: ' + n + ' операций. Откройте его в Excel или Google Таблицах', savedAndroid: (f) => 'Сохранено в «Загрузки»: ' + f, failed: 'Не удалось сохранить файл'
+    },
+    rem: {
+      limitT: 'Сегодня можно потратить', limitB: (x) => 'Около ' + x + '. Хорошего дня!', payT: 'Завтра платёж', payB: (n, x) => n + ' — ' + x,
+      envT: 'Конверт почти пуст', envB: (c, p) => c + ': потрачено ' + p + '% лимита', envOver: (c, p) => c + ': лимит превышен (' + p + '%)'
+    },
+    notif: {
+      enable: 'Включить уведомления', active: 'Уведомления включены на этом устройстве', install: 'На iPhone уведомления работают, когда NUMMAZA установлена на экран «Домой».',
+      unsupported: 'Этот браузер не умеет присылать уведомления.', denied: 'Уведомления запрещены в настройках браузера или телефона.',
+      needServer: 'Уведомления работают при входе через сервер', serverOff: 'Сервер пока не настроен для уведомлений', on: 'Уведомления включены', fail: 'Не удалось включить уведомления',
+      limit: 'Утром: сколько можно потратить', pay: 'Накануне платежа и рассрочки', env: 'Конверт заполнен на 80%'
+    },
+    pin: {
+      section: 'Безопасность', toggle: 'Вход по PIN-коду', bioToggle: 'Отпечаток пальца / Face ID', change: 'Сменить PIN-код', note: 'Кто возьмёт телефон, не увидит ваши траты без PIN-кода.',
+      enter: 'Введите PIN-код', hello: (n) => 'Сәлем, ' + n, dots: (n) => 'Введено цифр: ' + n + ' из 4', wait: (s) => 'Слишком много попыток. Подождите ' + s + ' с', wrong: 'Неверный PIN-код',
+      bio: 'Отпечаток / Face ID', bioTitle: 'Вход в NUMMAZA', forgot: 'Забыли PIN?', forgotT: 'Сбросить PIN-код',
+      forgotServer: 'Выйдем из аккаунта на этом устройстве. Данные сохранены на сервере — войдите по паролю, и всё вернётся.', forgotLocal: 'Без сервера PIN сбросить можно только вместе с данными на этом устройстве. Все операции будут удалены.', forgotYes: 'Сбросить',
+      setT: 'Придумайте PIN-код', setS: '4 цифры', repeatT: 'Повторите PIN-код', repeatS: 'Ещё раз те же 4 цифры', mismatch: 'Коды не совпали, попробуйте ещё раз',
+      on: 'PIN-код включён', off: 'PIN-код выключен', bioOn: 'Вход по отпечатку / Face ID включён', bioFail: 'Не получилось включить вход по отпечатку'
+    },
+    rec: {
+      section: 'Восстановление пароля', has: (e) => 'Код для нового пароля придёт на ' + e, change: 'Изменить почту', label: 'Почта для восстановления', hint: 'Если забудете пароль, пришлём код на эту почту.',
+      saved: 'Почта сохранена', errEmail: 'Проверьте адрес почты',
+      title: 'Восстановление пароля', s1: 'Введите телефон или почту, с которыми входите. Пришлём код на почту, привязанную к аккаунту.', send: 'Получить код',
+      noEmail: 'Нет почты в аккаунте? Тогда восстановить пароль нельзя — привяжите почту в «Профиле», пока помните пароль.',
+      s2: 'Если к аккаунту привязана почта, код уже там (проверьте и «Спам»). Код действует 15 минут.', code: 'Код из письма', newPw: 'Новый пароль', reset: 'Сменить пароль и войти', again: 'Отправить код ещё раз',
+      done: 'Пароль изменён, вы вошли', badCode: (n) => 'Неверный код' + (n !== '' ? '. Осталось попыток: ' + n : ''), expired: 'Код устарел — запросите новый'
+    },
+    fam: {
+      title: 'Семейный бюджет', needServer: 'Семейный бюджет работает при входе через сервер.', introT: 'Общие траты семьи', introS: 'Создайте семью и пригласите близких по коду. Каждый сам отмечает, какие траты общие — личные операции никто не видит.',
+      name: 'Название', namePh: 'Наша семья', create: 'Создать семью', joinT: 'Есть код приглашения?', code: 'Код из 6 символов', join: 'Вступить',
+      over: (x) => 'Лимит превышен на ' + x, left: (x, l) => 'Осталось ' + x + ' из ' + l, noLimit: 'Лимит на месяц не задан', members: 'Участники', invite: 'Пригласить',
+      codeIs: (c) => 'Код приглашения: ' + c + '. Действует 48 часов, один раз. Отправьте его близкому: «Профиль → Семейный бюджет → Вступить».',
+      me: 'вы', owner: 'Создатель', member: 'Участник', kick: (n) => 'Убрать ' + n, kickText: 'Его общие траты исчезнут из семейного бюджета. Личные данные не пострадают.', kickYes: 'Убрать',
+      limitL: 'Лимит семьи на месяц, ₸', ops: 'Общие траты', how: 'Чтобы трата попала сюда, отметьте «Семейная трата» при добавлении или в карточке операции.', none: 'Пока нет общих трат',
+      leave: 'Выйти из семьи', leaveText: 'Ваши общие траты удалятся из семейного бюджета, личные данные останутся.', leaveYes: 'Выйти', month: 'Общие траты за месяц',
+      mark: (n) => 'Семейная трата (' + n + ')', badCode: 'Код не подошёл или устарел', full: 'В семье уже 8 человек', already: 'Вы уже в семье', created: 'Семья создана — пригласите близких', joined: 'Вы в семье!'
+    },
+    news: { v1_3: [
+      'Рассрочки и кредиты: Kaspi Red, 0-0-12 и другие. NUMMAZA помнит график, напоминает о платеже и заранее учитывает его в «Сегодня можно».',
+      'Кошелёк: карты, наличные и депозиты, в том числе в долларах, евро и рублях по курсу Нацбанка.',
+      'Вход по PIN-коду и отпечатку пальца или Face ID.',
+      'Напоминания: утром — сколько можно потратить, накануне — о платеже, сразу — когда конверт заполнен на 80%.',
+      'Семейный бюджет: общие траты и лимит на всю семью, приглашение по коду.',
+      'Восстановление пароля по почте и выгрузка операций в Excel.',
+      'Android: виджет «Сегодня можно» на главном экране.'
+    ] }
+  };
+
+  const kk = {
+    prof: { more: 'Тағы', version: 'NUMMAZA 1.3 · деректер құрылғыда сақталады' },
+    wal: { title: 'Әмиян', net: 'Қарыздарды шегергендегі ақшам', netSub: (a, d) => 'Шоттарда ' + a + ' · бөліп төлеу мен несие ' + d, emptyHome: 'Шоттар, қолма-қол ақша, валюта және Kaspi Red, 0-0-12 бөліп төлеулері бір жерде. Бөліп төлеу төлемдері «Бүгін жұмсауға болады» сомасынан шегеріледі.', open: 'Ашу', onAccounts: 'Шоттарда' },
+    acc: {
+      title: 'Шоттар', add: 'Қосу', new: 'Жаңа шот', empty: 'Картаны, қолма-қол ақшаны немесе депозитті қосыңыз — барлық ақшаңыз, оның ішінде доллар мен рубльдегісі көрінеді.',
+      ic: { card: '💳', cash: '💵', deposit: '🏦', other: '👛' }, type: { card: 'Карта', cash: 'Қолма-қол', deposit: 'Депозит', other: 'Басқа' },
+      rates: (d, usd, eur, rub) => 'ҚР ҰБ бағамы, ' + d + ': $ ' + usd + ' · € ' + eur + ' · ₽ ' + rub, ratesOld: 'бүгін, шамамен',
+      name: 'Атауы', namePh: 'Kaspi Gold', typeL: 'Түрі', cur: 'Валюта', balance: (c) => 'Қазір қанша, ' + c,
+      balHint: 'Әрі қарай қалдық осы шоттан белгілеген шығын мен кіріс бойынша өзі өзгереді.', balHintCur: 'Валюталық шот: қалдықты қолмен өзгертіңіз, теңгеге бағам бойынша есептеледі.',
+      del: 'Шотты жою', deleted: 'Шот жойылды', errName: 'Атауын енгізіңіз', from: 'Шот', none: 'Шотсыз'
+    },
+    loan: {
+      title: 'Бөліп төлеу мен несиелер', add: 'Қосу', new: 'Жаңа бөліп төлеу', empty: 'Kaspi Red, 0-0-12 бөліп төлеуін немесе несиені қосыңыз — NUMMAZA төлемді еске салады және оны «Бүгін жұмсауға болады» сомасында алдын ала ескереді.',
+      perMonth: ' / ай', done: 'Төленді', left: (n, s) => n + ' төлем қалды · ' + s, next: (d) => 'келесісі ' + d,
+      sum: (m, l) => 'Ай сайын ' + m + ' · барлығы қалды ' + l, note: 'Төлем кесте бойынша күні төленді деп саналады. Мерзімінен бұрын жапсаңыз — төлем санын өзгертіңіз.',
+      nextHome: (n, d, a) => 'Жақыны: ' + n + ', ' + d + ' — ' + a,
+      kind: { inst: 'Бөліп төлеу', credit: 'Несие' }, name: 'Не сатып алдыңыз / атауы', namePh: 'iPhone 0-0-12', bank: 'Банк', monthly: 'Айлық төлем, ₸', count: 'Қалған төлемдер', nextDate: 'Жақын төлем күні',
+      hint: 'Әрі қарай күндер өзі есептеледі: айына бір рет, сол күні.', del: 'Жою', deleted: 'Бөліп төлеу жойылды',
+      errName: 'Атауын енгізіңіз', errMonthly: 'Төлем сомасын енгізіңіз', errLeft: 'Қанша төлем қалды (1–600)', saved: (v) => 'Сақталды. Бүгін жұмсауға болады: ' + v
+    },
+    exp: {
+      btn: 'Операцияларды Excel-ге жүктеу', cols: ['Күні', 'Сомасы, ₸', 'Санат', 'Сипаттама', 'Үзіндідегідей', 'Шот', 'Дереккөз', 'Шығын емес', 'Отбасылық'],
+      src: { manual: 'Қолмен', push: 'Банк хабарландыруы', statement: 'Үзінді' }, yes: 'иә',
+      none: 'Әзірге жүктейтін ештеңе жоқ — операциялар жоқ', saved: (n) => 'Файл жүктелді: ' + n + ' операция. Excel немесе Google Кестелерде ашыңыз', savedAndroid: (f) => '«Жүктеулер» қалтасына сақталды: ' + f, failed: 'Файлды сақтау мүмкін болмады'
+    },
+    rem: {
+      limitT: 'Бүгін жұмсауға болады', limitB: (x) => 'Шамамен ' + x + '. Күніңіз сәтті болсын!', payT: 'Ертең төлем', payB: (n, x) => n + ' — ' + x,
+      envT: 'Конверт таусылуға жақын', envB: (c, p) => c + ': лимиттің ' + p + '% жұмсалды', envOver: (c, p) => c + ': лимиттен асты (' + p + '%)'
+    },
+    notif: {
+      enable: 'Хабарландыруларды қосу', active: 'Бұл құрылғыда хабарландырулар қосулы', install: 'iPhone-да хабарландырулар NUMMAZA басты экранға орнатылғанда жұмыс істейді.',
+      unsupported: 'Бұл браузер хабарландыру жібере алмайды.', denied: 'Хабарландырулар браузер немесе телефон баптауларында тыйым салынған.',
+      needServer: 'Хабарландырулар сервер арқылы кіргенде жұмыс істейді', serverOff: 'Сервер хабарландыруларға әлі бапталмаған', on: 'Хабарландырулар қосылды', fail: 'Хабарландыруларды қосу мүмкін болмады',
+      limit: 'Таңертең: қанша жұмсауға болады', pay: 'Төлем мен бөліп төлеу алдында', env: 'Конверт 80% толды'
+    },
+    pin: {
+      section: 'Қауіпсіздік', toggle: 'PIN-кодпен кіру', bioToggle: 'Саусақ ізі / Face ID', change: 'PIN-кодты өзгерту', note: 'Телефонды алған адам PIN-кодсыз шығындарыңызды көрмейді.',
+      enter: 'PIN-кодты енгізіңіз', hello: (n) => 'Сәлем, ' + n, dots: (n) => 'Енгізілді: 4-тен ' + n, wait: (s) => 'Тым көп әрекет. ' + s + ' с күтіңіз', wrong: 'PIN-код қате',
+      bio: 'Саусақ ізі / Face ID', bioTitle: 'NUMMAZA-ға кіру', forgot: 'PIN-ды ұмыттыңыз ба?', forgotT: 'PIN-кодты тастау',
+      forgotServer: 'Осы құрылғыда аккаунттан шығамыз. Деректер серверде сақтаулы — құпиясөзбен кірсеңіз, бәрі қайтады.', forgotLocal: 'Серверсіз PIN-ды тек осы құрылғыдағы деректермен бірге тастауға болады. Барлық операциялар жойылады.', forgotYes: 'Тастау',
+      setT: 'PIN-код ойлап табыңыз', setS: '4 сан', repeatT: 'PIN-кодты қайталаңыз', repeatS: 'Сол 4 санды тағы бір рет', mismatch: 'Кодтар сәйкес келмеді, қайталап көріңіз',
+      on: 'PIN-код қосылды', off: 'PIN-код өшірілді', bioOn: 'Саусақ ізі / Face ID арқылы кіру қосылды', bioFail: 'Саусақ ізімен кіруді қосу мүмкін болмады'
+    },
+    rec: {
+      section: 'Құпиясөзді қалпына келтіру', has: (e) => 'Жаңа құпиясөз коды мына поштаға келеді: ' + e, change: 'Поштаны өзгерту', label: 'Қалпына келтіру поштасы', hint: 'Құпиясөзді ұмытсаңыз, кодты осы поштаға жібереміз.',
+      saved: 'Пошта сақталды', errEmail: 'Пошта мекенжайын тексеріңіз',
+      title: 'Құпиясөзді қалпына келтіру', s1: 'Кіретін телефон немесе поштаны енгізіңіз. Аккаунтқа байланған поштаға код жібереміз.', send: 'Код алу',
+      noEmail: 'Аккаунтта пошта жоқ па? Онда құпиясөзді қалпына келтіру мүмкін емес — құпиясөзді есте сақтап тұрғанда «Профильде» поштаны байлаңыз.',
+      s2: 'Аккаунтқа пошта байланған болса, код сонда («Спам» қалтасын да қараңыз). Код 15 минут жарамды.', code: 'Хаттағы код', newPw: 'Жаңа құпиясөз', reset: 'Құпиясөзді өзгертіп, кіру', again: 'Кодты қайта жіберу',
+      done: 'Құпиясөз өзгерді, сіз кірдіңіз', badCode: (n) => 'Код қате' + (n !== '' ? '. Қалған әрекет: ' + n : ''), expired: 'Кодтың мерзімі өтті — жаңасын сұраңыз'
+    },
+    fam: {
+      title: 'Отбасылық бюджет', needServer: 'Отбасылық бюджет сервер арқылы кіргенде жұмыс істейді.', introT: 'Отбасының ортақ шығындары', introS: 'Отбасын құрып, жақындарыңызды код арқылы шақырыңыз. Әркім қай шығын ортақ екенін өзі белгілейді — жеке операцияларды ешкім көрмейді.',
+      name: 'Атауы', namePh: 'Біздің отбасы', create: 'Отбасын құру', joinT: 'Шақыру коды бар ма?', code: '6 таңбалы код', join: 'Қосылу',
+      over: (x) => 'Лимиттен ' + x + ' асты', left: (x, l) => l + ' ішінен ' + x + ' қалды', noLimit: 'Айлық лимит берілмеген', members: 'Қатысушылар', invite: 'Шақыру',
+      codeIs: (c) => 'Шақыру коды: ' + c + '. 48 сағат, бір рет жарамды. Жақыныңызға жіберіңіз: «Профиль → Отбасылық бюджет → Қосылу».',
+      me: 'сіз', owner: 'Құрушы', member: 'Қатысушы', kick: (n) => n + ' шығару', kickText: 'Оның ортақ шығындары отбасылық бюджеттен жоғалады. Жеке деректеріне әсер етпейді.', kickYes: 'Шығару',
+      limitL: 'Отбасының айлық лимиті, ₸', ops: 'Ортақ шығындар', how: 'Шығын осында түсуі үшін қосқанда немесе операция картасында «Отбасылық шығын» деп белгілеңіз.', none: 'Әзірге ортақ шығын жоқ',
+      leave: 'Отбасынан шығу', leaveText: 'Ортақ шығындарыңыз отбасылық бюджеттен жойылады, жеке деректер қалады.', leaveYes: 'Шығу', month: 'Айдағы ортақ шығындар',
+      mark: (n) => 'Отбасылық шығын (' + n + ')', badCode: 'Код жарамсыз немесе мерзімі өткен', full: 'Отбасында 8 адам бар', already: 'Сіз отбасындасыз', created: 'Отбасы құрылды — жақындарыңызды шақырыңыз', joined: 'Сіз отбасындасыз!'
+    },
+    news: { v1_3: [
+      'Бөліп төлеу мен несиелер: Kaspi Red, 0-0-12 және басқалар. NUMMAZA кестені есте сақтайды, төлемді еске салады және оны «Бүгін жұмсауға болады» сомасында алдын ала ескереді.',
+      'Әмиян: карталар, қолма-қол ақша және депозиттер, оның ішінде Ұлттық банк бағамы бойынша доллар, еуро және рубльмен.',
+      'PIN-кодпен және саусақ ізімен немесе Face ID арқылы кіру.',
+      'Еске салғыштар: таңертең — қанша жұмсауға болатыны, алдыңғы күні — төлем туралы, бірден — конверт 80% толғанда.',
+      'Отбасылық бюджет: бүкіл отбасының ортақ шығындары мен лимиті, код арқылы шақыру.',
+      'Құпиясөзді пошта арқылы қалпына келтіру және операцияларды Excel-ге жүктеу.',
+      'Android: басты экранда «Бүгін жұмсауға болады» виджеті.'
+    ] }
+  };
+
+  const en = {
+    prof: { more: 'More', version: 'NUMMAZA 1.3 · data stays on your device' },
+    wal: { title: 'Wallet', net: 'My money minus debts', netSub: (a, d) => 'Accounts ' + a + ' · installments and loans ' + d, emptyHome: 'Accounts, cash, foreign currency and Kaspi Red / 0-0-12 installments in one place. Installment payments are set aside from “Safe to spend”.', open: 'Open', onAccounts: 'In accounts' },
+    acc: {
+      title: 'Accounts', add: 'Add', new: 'New account', empty: 'Add a card, cash or a deposit to see how much money you have in total, including dollars and rubles.',
+      ic: { card: '💳', cash: '💵', deposit: '🏦', other: '👛' }, type: { card: 'Card', cash: 'Cash', deposit: 'Deposit', other: 'Other' },
+      rates: (d, usd, eur, rub) => 'National Bank rate, ' + d + ': $ ' + usd + ' · € ' + eur + ' · ₽ ' + rub, ratesOld: 'today (approx.)',
+      name: 'Name', namePh: 'Kaspi Gold', typeL: 'Type', cur: 'Currency', balance: (c) => 'Balance now, ' + c,
+      balHint: 'From now on the balance follows the expenses and income you mark with this account.', balHintCur: 'Foreign currency account: update the balance by hand; it is converted to tenge at the current rate.',
+      del: 'Delete account', deleted: 'Account deleted', errName: 'Enter a name', from: 'Account', none: 'No account'
+    },
+    loan: {
+      title: 'Installments and loans', add: 'Add', new: 'New installment', empty: 'Add a Kaspi Red, 0-0-12 installment or a loan — NUMMAZA will remind you before each payment and set the money aside in “Safe to spend”.',
+      perMonth: '/mo', done: 'Paid off', left: (n, s) => n + ' payment' + (n === 1 ? '' : 's') + ' left · ' + s, next: (d) => 'next ' + d,
+      sum: (m, l) => 'Every month ' + m + ' · left in total ' + l, note: 'A payment counts as paid on its scheduled date. Paid early? Change the number of payments.',
+      nextHome: (n, d, a) => 'Next: ' + n + ', ' + d + ' — ' + a,
+      kind: { inst: 'Installment', credit: 'Loan' }, name: 'What you bought / name', namePh: 'iPhone 0-0-12', bank: 'Bank', monthly: 'Monthly payment, ₸', count: 'Payments left', nextDate: 'Next payment date',
+      hint: 'Later dates are calculated automatically: once a month on the same day.', del: 'Delete', deleted: 'Installment deleted',
+      errName: 'Enter a name', errMonthly: 'Enter the payment amount', errLeft: 'How many payments are left (1–600)', saved: (v) => 'Saved. Safe to spend today: ' + v
+    },
+    exp: {
+      btn: 'Download transactions for Excel', cols: ['Date', 'Amount, ₸', 'Category', 'Description', 'As in statement', 'Account', 'Source', 'Not spending', 'Family'],
+      src: { manual: 'Manual', push: 'Bank notification', statement: 'Statement' }, yes: 'yes',
+      none: 'Nothing to export yet — no transactions', saved: (n) => 'Downloaded ' + n + ' transactions. Open the file in Excel or Google Sheets', savedAndroid: (f) => 'Saved to Downloads: ' + f, failed: 'Could not save the file'
+    },
+    rem: {
+      limitT: 'Safe to spend today', limitB: (x) => 'About ' + x + '. Have a good day!', payT: 'Payment due tomorrow', payB: (n, x) => n + ' — ' + x,
+      envT: 'Envelope almost empty', envB: (c, p) => c + ': ' + p + '% of the limit spent', envOver: (c, p) => c + ': over the limit (' + p + '%)'
+    },
+    notif: {
+      enable: 'Turn on notifications', active: 'Notifications are on for this device', install: 'On iPhone, notifications work once NUMMAZA is added to the Home Screen.',
+      unsupported: 'This browser cannot show notifications.', denied: 'Notifications are blocked in your browser or phone settings.',
+      needServer: 'Notifications need a server account', serverOff: 'The server is not set up for notifications yet', on: 'Notifications are on', fail: 'Could not turn on notifications',
+      limit: 'Morning: how much you can spend', pay: 'The day before a payment', env: 'Envelope 80% full'
+    },
+    pin: {
+      section: 'Security', toggle: 'PIN code', bioToggle: 'Fingerprint / Face ID', change: 'Change PIN code', note: 'Anyone who picks up your phone will not see your spending without the PIN.',
+      enter: 'Enter your PIN', hello: (n) => 'Hi, ' + n, dots: (n) => n + ' of 4 digits entered', wait: (s) => 'Too many attempts. Wait ' + s + ' s', wrong: 'Wrong PIN',
+      bio: 'Fingerprint / Face ID', bioTitle: 'Unlock NUMMAZA', forgot: 'Forgot PIN?', forgotT: 'Reset PIN',
+      forgotServer: 'We will sign you out on this device. Your data is safe on the server — sign in with your password to get it back.', forgotLocal: 'Without a server, the PIN can only be reset together with the data on this device. All transactions will be deleted.', forgotYes: 'Reset',
+      setT: 'Choose a PIN', setS: '4 digits', repeatT: 'Repeat the PIN', repeatS: 'The same 4 digits again', mismatch: 'The codes did not match, try again',
+      on: 'PIN is on', off: 'PIN is off', bioOn: 'Fingerprint / Face ID unlock is on', bioFail: 'Could not turn on fingerprint unlock'
+    },
+    rec: {
+      section: 'Password recovery', has: (e) => 'A reset code will be sent to ' + e, change: 'Change email', label: 'Recovery email', hint: 'If you forget your password, we will send a code to this address.',
+      saved: 'Email saved', errEmail: 'Check the email address',
+      title: 'Reset password', s1: 'Enter the phone or email you sign in with. We will send a code to the email linked to your account.', send: 'Get a code',
+      noEmail: 'No email on your account? Then the password cannot be recovered — add an email in Profile while you still remember it.',
+      s2: 'If your account has an email, the code is already there (check Spam too). It is valid for 15 minutes.', code: 'Code from the email', newPw: 'New password', reset: 'Change password and sign in', again: 'Send the code again',
+      done: 'Password changed, you are signed in', badCode: (n) => 'Wrong code' + (n !== '' ? '. Attempts left: ' + n : ''), expired: 'The code has expired — request a new one'
+    },
+    fam: {
+      title: 'Family budget', needServer: 'The family budget needs a server account.', introT: 'Shared family spending', introS: 'Create a family and invite your loved ones with a code. Everyone marks which expenses are shared — nobody sees personal transactions.',
+      name: 'Name', namePh: 'Our family', create: 'Create family', joinT: 'Have an invite code?', code: '6-character code', join: 'Join',
+      over: (x) => 'Over the limit by ' + x, left: (x, l) => x + ' left of ' + l, noLimit: 'No monthly limit set', members: 'Members', invite: 'Invite',
+      codeIs: (c) => 'Invite code: ' + c + '. Valid for 48 hours, once. Send it: Profile → Family budget → Join.',
+      me: 'you', owner: 'Creator', member: 'Member', kick: (n) => 'Remove ' + n, kickText: 'Their shared expenses will disappear from the family budget. Personal data is not affected.', kickYes: 'Remove',
+      limitL: 'Family limit per month, ₸', ops: 'Shared expenses', how: 'To add an expense here, tick “Family expense” when adding it or in the transaction card.', none: 'No shared expenses yet',
+      leave: 'Leave family', leaveText: 'Your shared expenses will be removed from the family budget; personal data stays.', leaveYes: 'Leave', month: 'Shared spending this month',
+      mark: (n) => 'Family expense (' + n + ')', badCode: 'The code is wrong or expired', full: 'The family already has 8 members', already: 'You are already in a family', created: 'Family created — invite your loved ones', joined: 'You joined the family!'
+    },
+    news: { v1_3: [
+      'Installments and loans: Kaspi Red, 0-0-12 and more. NUMMAZA keeps the schedule, reminds you before a payment and sets it aside in “Safe to spend”.',
+      'Wallet: cards, cash and deposits, including dollars, euros and rubles at the National Bank rate.',
+      'Unlock with a PIN code and fingerprint or Face ID.',
+      'Reminders: in the morning — how much you can spend; the day before — upcoming payments; right away — when an envelope is 80% full.',
+      'Family budget: shared expenses and one limit for the whole family, invite by code.',
+      'Password recovery by email and export of transactions for Excel.',
+      'Android: “Safe to spend” widget on the home screen.'
+    ] }
+  };
+
+  function merge(dst, src) {
+    Object.keys(src).forEach((k) => {
+      if (src[k] && typeof src[k] === 'object' && !Array.isArray(src[k]) && dst[k] && typeof dst[k] === 'object') merge(dst[k], src[k]);
+      else dst[k] = src[k];
+    });
+  }
+  merge(NZ.I18N.ru, ru);
+  merge(NZ.I18N.kk, kk);
+  merge(NZ.I18N.en, en);
+})();
+
+</script>
+<script>
+/* NUMMAZA — расчёты без интерфейса: рассрочки и кредиты, счета и валюты, экспорт, план напоминаний.
+   Всё доступно через window.NZ и проверяется тестами. */
+(function () {
+  'use strict';
+  const NZ = window.NZ;
+
+  /* ---------- Рассрочки и кредиты ----------
+     Запись: { id, name, bank, kind: 'inst'|'credit', monthly, left, next, createdAt }
+       left — сколько платежей оставалось на момент добавления (включая ближайший),
+       next — дата ближайшего платежа на момент добавления.
+     Дальше график считается сам: платёж раз в месяц в тот же день, прошедшие даты — оплачены. */
+  NZ.loanDate = function (l, k) {
+    const day = +l.next.slice(8);
+    const ym = NZ.addMonths(NZ.ym(l.next), k);
+    return ym + '-' + String(Math.min(day, NZ.daysInMonth(ym))).padStart(2, '0');
+  };
+  NZ.loanState = function (l, today) {
+    const left = Math.max(0, l.left | 0);
+    let passed = 0;
+    while (passed < left && NZ.loanDate(l, passed) < today) passed++;
+    const remaining = left - passed;
+    return {
+      remaining,
+      done: remaining === 0,
+      nextDue: remaining ? NZ.loanDate(l, passed) : null,
+      leftSum: remaining * (l.monthly || 0),
+      end: left ? NZ.loanDate(l, left - 1) : null,
+      pct: left ? Math.round(((l.paidBefore || 0) + passed) / ((l.paidBefore || 0) + left) * 100) : 100
+    };
+  };
+  // Платежи по рассрочкам в [from, to). Платёж, уже оплаченный незадолго до срока (трата «рассрочка»
+  // на ту же сумму за 5 дней до даты или позже), не считается — иначе он вычелся бы дважды.
+  NZ.loanDuesIn = function (state, from, to) {
+    const out = [];
+    (state.loans || []).forEach((l) => {
+      const st = NZ.loanState(l, from);
+      if (st.done) return;
+      for (let k = 0; k < (l.left | 0); k++) {
+        const d = NZ.loanDate(l, k);
+        if (d < from) continue;
+        if (d >= to) break;
+        const paid = (state.txs || []).some((t) => NZ.isSpend(t) && t.cat === 'installments' && t.date >= NZ.addDays(d, -5) && t.date <= d && t.date <= from &&
+          Math.abs(-t.amount - l.monthly) <= l.monthly * 0.1);
+        if (!paid) out.push({ loan: l, date: d, amount: l.monthly || 0 });
+      }
+    });
+    return out.sort((a, b) => (a.date < b.date ? -1 : 1));
+  };
+  NZ.loansSummary = function (state, today) {
+    const active = (state.loans || []).map((l) => ({ l, st: NZ.loanState(l, today) })).filter((x) => !x.st.done);
+    const next = active.filter((x) => x.st.nextDue).sort((a, b) => (a.st.nextDue < b.st.nextDue ? -1 : 1))[0];
+    return {
+      count: active.length,
+      monthly: NZ.sum(active, (x) => x.l.monthly || 0),
+      leftSum: NZ.sum(active, (x) => x.st.leftSum),
+      next: next ? { name: next.l.name, date: next.st.nextDue, amount: next.l.monthly } : null
+    };
+  };
+
+  /* ---------- Счета и валюты ----------
+     Счёт: { id, name, type: 'card'|'cash'|'deposit'|'other', cur: 'KZT'|'USD'|'EUR'|'RUB', balance, since, createdAt }
+     Баланс сейчас = введённый остаток + операции с этим счётом начиная с даты since (только счета в тенге). */
+  NZ.CURRENCIES = ['KZT', 'USD', 'EUR', 'RUB'];
+  NZ.CUR_SIGN = { KZT: '₸', USD: '$', EUR: '€', RUB: '₽' };
+  // Курсы на случай, если сервер недоступен (обновляются с сервера: курсы Национального банка РК)
+  const FALLBACK = { USD: 447, EUR: 502, RUB: 5.4, date: null, fallback: true }; // НБ РК, ноябрь 2026
+  const RATES_KEY = 'nummaza.rates';
+  NZ.rates = (function () {
+    try { const r = JSON.parse(localStorage.getItem(RATES_KEY)); if (r && r.USD) return r; } catch (e) { /* нет сохранённых */ }
+    return Object.assign({}, FALLBACK);
+  })();
+  NZ.setRates = function (r) {
+    if (!r || !(r.USD > 0)) return;
+    NZ.rates = { USD: +r.USD, EUR: +r.EUR || FALLBACK.EUR, RUB: +r.RUB || FALLBACK.RUB, date: r.date || null };
+    try { localStorage.setItem(RATES_KEY, JSON.stringify(NZ.rates)); } catch (e) { /* хранилище недоступно */ }
+  };
+  NZ.toKZT = (amount, cur) => (cur && cur !== 'KZT' ? amount * (NZ.rates[cur] || 0) : amount);
+  NZ.accBalance = function (state, a) {
+    if (a.cur && a.cur !== 'KZT') return a.balance || 0;
+    return (a.balance || 0) + NZ.sum((state.txs || []).filter((t) => t.acc === a.id && t.date >= (a.since || '0000')), (t) => t.amount);
+  };
+  NZ.netWorth = function (state) {
+    const accs = state.accounts || [];
+    const assets = NZ.sum(accs, (a) => NZ.toKZT(NZ.accBalance(state, a), a.cur));
+    const debt = NZ.loansSummary(state, NZ.today()).leftSum;
+    return { assets: Math.round(assets), debt, net: Math.round(assets - debt) };
+  };
+  NZ.fmtCur = function (n, cur) {
+    if (!cur || cur === 'KZT') return NZ.money(n);
+    const v = Math.round(n * 100) / 100;
+    const s = Math.abs(v).toLocaleString(NZ.lang === 'en' ? 'en-US' : 'ru-RU', { maximumFractionDigits: 2 });
+    return (v < 0 ? '−' : '') + s + ' ' + NZ.CUR_SIGN[cur];
+  };
+
+  /* ---------- Экспорт в Excel (CSV) ----------
+     Разделитель «;», UTF-8 с BOM — Excel на русском и казахском открывает сразу, без мастера импорта. */
+  NZ.exportCsv = function (state) {
+    const accName = {};
+    (state.accounts || []).forEach((a) => { accName[a.id] = a.name; });
+    const q = (v) => { const s = String(v == null ? '' : v); return /[;"\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const head = NZ.t('exp.cols');
+    const rows = state.txs.slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)).map((x) => [
+      x.date, x.amount, NZ.t('cat.' + x.cat), x.merchant || '', x.raw && x.raw !== x.merchant ? x.raw : '',
+      accName[x.acc] || '', NZ.t('exp.src.' + (x.source === 'manual' || x.source === 'push' ? x.source : 'statement')), x.own ? NZ.t('exp.yes') : '', x.fam ? NZ.t('exp.yes') : ''
+    ]);
+    return '﻿' + [head].concat(rows).map((r) => r.map(q).join(';')).join('\r\n') + '\r\n';
+  };
+  NZ.exportName = () => 'nummaza-' + NZ.today() + '.csv';
+
+  /* ---------- Напоминания ----------
+     План на ближайшие дни: утром «сколько можно потратить», накануне платежа — «завтра платёж».
+     Считается на устройстве (там все данные) и отдаётся Android-приложению или серверу для push. */
+  function at(iso, hh) { const d = NZ.parseISO(iso); d.setHours(hh, 0, 0, 0); return d.getTime(); }
+  NZ.reminderPlan = function (state, nowMs) {
+    const now = nowMs || Date.now();
+    const td = NZ.today();
+    const n = state.profile.notif || {};
+    const out = [];
+    if (!state.account || !state.profile.onboarded) return out;
+    const s = NZ.safeToday(state, td);
+    if (n.limit && state.profile.income) {
+      const even = Math.floor(Math.max(0, s.leftTotal) / Math.max(1, s.daysLeft) / 10) * 10;
+      for (let k = 0; k < Math.min(7, s.daysLeft); k++) {
+        const day = NZ.addDays(td, k);
+        const when = at(day, 9);
+        if (when <= now) continue;
+        out.push({ id: 'limit:' + day, at: when, title: NZ.t('rem.limitT'), body: NZ.t('rem.limitB', NZ.money(k === 0 ? s.value : even)) });
+      }
+    }
+    if (n.pay) {
+      const end = NZ.addDays(td, 31);
+      const list = NZ.upcoming(state, td).filter((u) => !u.loan).concat(NZ.loanDuesIn(state, td, end).map((d) => ({ merchant: d.loan.name, amount: d.amount, date: d.date })));
+      const seen = {};
+      list.forEach((u) => {
+        const id = 'pay:' + u.date + ':' + u.merchant;
+        if (seen[id]) return; seen[id] = 1;
+        const when = at(NZ.addDays(u.date, -1), 19);
+        if (when <= now) return;
+        out.push({ id, at: when, title: NZ.t('rem.payT'), body: NZ.t('rem.payB', u.merchant, NZ.money(u.amount)) });
+      });
+    }
+    return out.sort((a, b) => a.at - b.at).slice(0, 40);
+  };
+  // Конверты, которые этим изменением перешли порог 80% (или 100%): [{ cat, pct }]
+  NZ.envCrossings = function (before, after) {
+    const out = [];
+    after.forEach((e) => {
+      const b = before.find((x) => x.cat === e.cat);
+      if (!b || !e.limit) return;
+      const lvl = (r) => (r >= 1 ? 2 : r >= 0.8 ? 1 : 0);
+      if (lvl(e.ratio) > lvl(b.ratio)) out.push({ cat: e.cat, pct: Math.round(e.ratio * 100), over: e.ratio >= 1 });
+    });
+    return out;
+  };
 })();
 
 </script>
@@ -1481,7 +1904,11 @@ NZ.API_URL = '';
       await authed('/me', { method: 'DELETE' });
       store(null);
     },
-    sync(body) { return authed('/sync', { method: 'POST', body }); }
+    sync(body) { return authed('/sync', { method: 'POST', body }); },
+    // Остальные запросы (семья, почта, уведомления, курсы): call — с токеном, pub — без
+    call(path, opts) { return authed(path, opts); },
+    pub(path, opts) { return raw(path, opts); },
+    adopt(r) { store(r); return r.user; } // вход по ответу сервера (после сброса пароля)
   };
 })();
 
@@ -1503,6 +1930,8 @@ NZ.API_URL = '';
     s.txs.forEach((x) => m.set('tx:' + x.id, x));
     s.goals.forEach((x) => m.set('goal:' + x.id, x));
     s.imports.forEach((x) => m.set('import:' + x.id, x));
+    (s.loans || []).forEach((x) => m.set('loan:' + x.id, x));
+    (s.accounts || []).forEach((x) => m.set('acc:' + x.id, x));
     Object.keys(s.envelopes).forEach((c) => m.set('envelope:' + c, { limit: s.envelopes[c] }));
     Object.keys(s.rules).forEach((k) => m.set('rule:' + k, { cat: s.rules[k] }));
     const p = s.profile;
@@ -1556,8 +1985,9 @@ NZ.API_URL = '';
       const after = c.deleted ? undefined : JSON.stringify(c.data);
       if (before === after) return;
       changed++;
-      const list = { tx: 'txs', goal: 'goals', import: 'imports' }[c.kind];
+      const list = { tx: 'txs', goal: 'goals', import: 'imports', loan: 'loans', acc: 'accounts' }[c.kind];
       if (list) {
+        if (!s[list]) s[list] = [];
         const i = s[list].findIndex((x) => x.id === c.id);
         if (c.deleted) { if (i >= 0) s[list].splice(i, 1); }
         else { const v = Object.assign({}, c.data, { id: c.id }); if (i >= 0) s[list][i] = v; else s[list].push(v); }
@@ -1636,6 +2066,646 @@ NZ.API_URL = '';
 
 </script>
 <script>
+/* NUMMAZA 1.3 — интерфейс новых возможностей:
+   кошелёк (счета, валюты, рассрочки), экспорт в Excel, PIN-код и отпечаток / Face ID,
+   напоминания (Android — нативно, сайт — push), виджет Android, восстановление пароля по почте, семейный бюджет.
+   Подключается к app.js через NZ.ext (см. core.js). Помощники интерфейса берём из NZ.app во время отрисовки. */
+(function () {
+  'use strict';
+  const NZ = window.NZ;
+  const EXT = NZ.ext;
+  const app = () => NZ.app;
+  const S = () => NZ.app.state;
+  const t = (...a) => NZ.t(...a);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  const M = (n, o) => NZ.money(n, o);
+  const icon = (n, s) => NZ.app.icon(n, s);
+  const nat = () => window.NummazaNative || null;
+  const has = (fn) => { const n = nat(); return !!(n && typeof n[fn] === 'function'); };
+  const num = (v) => parseInt(String(v || '').replace(/\D/g, ''), 10) || 0;
+  const grp = (n) => String(n || '').replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  const serverOn = () => !!(NZ.api && NZ.api.enabled() && S().account && S().account.server && S().session);
+  const save = () => { NZ.save(S()); app().render(); };
+  const sw = (on, action, label, v) => '<button type="button" role="switch" class="switch" aria-checked="' + !!on + '" aria-label="' + esc(label) + '" data-a="' + action + '"' + (v ? ' data-v="' + v + '"' : '') + '><i></i></button>';
+  const ui = () => NZ.app.ui;
+
+  /* ================= КОШЕЛЁК: счета и рассрочки ================= */
+  const ACC_TYPES = ['card', 'cash', 'deposit', 'other'];
+  function viewWallet() {
+    const s = S();
+    const td = NZ.today();
+    const nw = NZ.netWorth(s);
+    const ls = NZ.loansSummary(s, td);
+    const r = NZ.rates;
+    const accs = (s.accounts || []).map((a) => {
+      const bal = NZ.accBalance(s, a);
+      return '<li><button type="button" class="li li-btn" data-a="accOpen" data-v="' + a.id + '"><span class="acc-ic">' + esc(t('acc.ic.' + (a.type || 'other'))) + '</span><span class="grow"><b>' + esc(a.name) + '</b><span class="small muted block">' + esc(t('acc.type.' + (a.type || 'other'))) + (a.cur !== 'KZT' ? ' · ≈ ' + esc(M(NZ.toKZT(bal, a.cur))) : '') + '</span></span><b>' + esc(NZ.fmtCur(bal, a.cur)) + '</b></button></li>';
+    }).join('');
+    const loans = (s.loans || []).map((l) => ({ l, st: NZ.loanState(l, td) })).sort((a, b) => (a.st.done - b.st.done) || ((a.st.nextDue || '9') < (b.st.nextDue || '9') ? -1 : 1)).map(({ l, st }) =>
+      '<li><button type="button" class="li li-btn loan" data-a="loanOpen" data-v="' + l.id + '"><span class="grow stack-6"><span class="row-between"><b>' + esc(l.name) + '</b><b>' + (st.done ? '<span class="pill pill-ok">' + esc(t('loan.done')) + '</span>' : M(l.monthly) + esc(t('loan.perMonth'))) + '</b></span>' +
+      (st.done ? '' : '<span class="bar"><i style="width:' + st.pct + '%"></i></span><span class="small muted">' + esc(t('loan.left', st.remaining, M(st.leftSum))) + ' · ' + esc(t('loan.next', NZ.fmtDate(st.nextDue))) + '</span>') +
+      '</span></button></li>').join('');
+    return '<header class="page-head"><h1 class="h2">' + esc(t('wal.title')) + '</h1></header>' +
+      '<section class="card card-ink stack-6" aria-labelledby="nw-h"><span id="nw-h" class="small teal-l">' + esc(t('wal.net')) + '</span><b class="h1">' + M(nw.net) + '</b><span class="small">' + esc(t('wal.netSub', M(nw.assets), M(nw.debt))) + '</span></section>' +
+      '<section class="card stack-10" aria-labelledby="acc-h"><div class="row-between"><h2 id="acc-h" class="h3">' + esc(t('acc.title')) + '</h2><button type="button" class="btn btn-sm" data-a="accNew">' + esc(t('acc.add')) + '</button></div>' +
+      (accs ? '<ul class="list">' + accs + '</ul>' : '<p class="muted small">' + esc(t('acc.empty')) + '</p>') +
+      '<p class="small muted">' + esc(t('acc.rates', r.date ? NZ.fmtDate(r.date) : t('acc.ratesOld'), NZ.fmtCur(r.USD, 'KZT').replace(' ₸', ''), NZ.fmtCur(r.EUR, 'KZT').replace(' ₸', ''), String(r.RUB).replace('.', NZ.lang === 'en' ? '.' : ','))) + '</p></section>' +
+      '<section class="card stack-10" aria-labelledby="loan-h"><div class="row-between"><h2 id="loan-h" class="h3">' + esc(t('loan.title')) + '</h2><button type="button" class="btn btn-sm" data-a="loanNew">' + esc(t('loan.add')) + '</button></div>' +
+      (ls.count ? '<p class="small">' + esc(t('loan.sum', M(ls.monthly), M(ls.leftSum))) + '</p>' : '') +
+      (loans ? '<ul class="list">' + loans + '</ul>' : '<p class="muted small">' + esc(t('loan.empty')) + '</p>') +
+      '<p class="small muted">' + esc(t('loan.note')) + '</p></section>';
+  }
+  EXT.views.wallet = viewWallet;
+
+  // Карточка на «Обзоре»
+  EXT.homeCards.push(function () {
+    const s = S();
+    const ls = NZ.loansSummary(s, NZ.today());
+    const accs = s.accounts || [];
+    if (!ls.count && !accs.length) return '<section class="card stack-10" aria-labelledby="wal-h"><h2 id="wal-h" class="h3">' + esc(t('wal.title')) + '</h2><p class="muted small">' + esc(t('wal.emptyHome')) + '</p><a class="btn btn-sm" href="#wallet">' + esc(t('wal.open')) + '</a></section>';
+    const nw = NZ.netWorth(s);
+    return '<section class="card stack-10" aria-labelledby="wal-h"><div class="row-between"><h2 id="wal-h" class="h3">' + esc(t('wal.title')) + '</h2><a href="#wallet" class="link">' + esc(t('wal.open')) + '</a></div>' +
+      (accs.length ? '<div class="row-between"><span class="muted">' + esc(t('wal.onAccounts')) + '</span><b>' + M(nw.assets) + '</b></div>' : '') +
+      (ls.count ? '<div class="row-between"><span class="muted">' + esc(t('loan.title')) + '</span><b>' + M(ls.monthly) + esc(t('loan.perMonth')) + '</b></div>' +
+        (ls.next ? '<p class="small muted">' + esc(t('loan.nextHome', ls.next.name, NZ.fmtDate(ls.next.date), M(ls.next.amount))) + '</p>' : '') : '') + '</section>';
+  });
+
+  // --- Счёт
+  function sheetAcc() {
+    const d = ui().sheetData;
+    const a = d.id ? (S().accounts || []).find((x) => x.id === d.id) : null;
+    const cur = d.cur || (a ? a.cur : 'KZT');
+    const type = d.type || (a ? a.type : 'card');
+    const bal = a ? NZ.accBalance(S(), a) : '';
+    return [a ? a.name : t('acc.new'), '<form class="stack-14" data-form="acc">' +
+      '<label class="field"><span>' + esc(t('acc.name')) + '</span><input id="acc-name" data-autofocus maxlength="40" value="' + esc(d.nameDraft != null ? d.nameDraft : a ? a.name : '') + '" placeholder="' + esc(t('acc.namePh')) + '" aria-invalid="' + !!d.err + '">' + (d.err ? '<span class="err">' + esc(d.err) + '</span>' : '') + '</label>' +
+      '<div class="field"><span>' + esc(t('acc.typeL')) + '</span><div class="row-gap wrap">' + ACC_TYPES.map((k) => '<button type="button" class="chip-btn" data-a="accType" data-v="' + k + '" aria-pressed="' + (type === k) + '">' + esc(t('acc.type.' + k)) + '</button>').join('') + '</div></div>' +
+      '<div class="field"><span>' + esc(t('acc.cur')) + '</span><div class="seg seg-full" role="group">' + NZ.CURRENCIES.map((c) => '<button type="button" data-a="accCur" data-v="' + c + '" aria-pressed="' + (cur === c) + '">' + c + ' ' + NZ.CUR_SIGN[c] + '</button>').join('') + '</div></div>' +
+      '<label class="field"><span>' + esc(t('acc.balance', NZ.CUR_SIGN[cur])) + '</span><input id="acc-bal" inputmode="decimal" value="' + esc(d.balDraft != null ? d.balDraft : bal === '' ? '' : String(Math.round(bal * 100) / 100)) + '"><span class="hint">' + esc(cur === 'KZT' ? t('acc.balHint') : t('acc.balHintCur')) + '</span></label>' +
+      '<button class="btn btn-primary btn-lg" type="submit">' + esc(t('c.save')) + '</button>' +
+      (a ? '<button type="button" class="btn btn-danger-t" data-a="accDel" data-v="' + a.id + '">' + icon('trash', 18) + esc(t('acc.del')) + '</button>' : '') + '</form>'];
+  }
+  EXT.sheets.acc = sheetAcc;
+  Object.assign(EXT.actions, {
+    accNew() { app().openSheet('acc', {}); },
+    accOpen(el) { app().openSheet('acc', { id: el.dataset.v }); },
+    accType(el) { keepAccInputs(); ui().sheetData.type = el.dataset.v; app().renderSheet(); },
+    accCur(el) { keepAccInputs(); ui().sheetData.cur = el.dataset.v; app().renderSheet(); },
+    accDel(el) {
+      const s = S(); const before = app().snapshot();
+      s.accounts = s.accounts.filter((a) => a.id !== el.dataset.v);
+      s.txs.forEach((x) => { if (x.acc === el.dataset.v) delete x.acc; });
+      ui().sheet = null; save(); app().toast(t('acc.deleted'), app().restore(before));
+    }
+  });
+  function keepAccInputs() {
+    const n = document.getElementById('acc-name'); const b = document.getElementById('acc-bal');
+    const d = ui().sheetData;
+    if (n) d.nameDraft = n.value;
+    if (b) d.balDraft = b.value; // лист перерисуется с этими значениями (см. sheetAcc)
+  }
+  EXT.forms.acc = function () {
+    const s = S(); const d = ui().sheetData;
+    const name = document.getElementById('acc-name').value.trim();
+    if (!name) { d.err = t('acc.errName'); app().renderSheet(); return; }
+    const bal = parseFloat(String(document.getElementById('acc-bal').value).replace(/\s/g, '').replace(',', '.')) || 0;
+    const before = app().snapshot();
+    let a = d.id ? s.accounts.find((x) => x.id === d.id) : null;
+    const cur = d.cur || (a ? a.cur : 'KZT');
+    const type = d.type || (a ? a.type : 'card');
+    if (!a) { a = { id: NZ.uid(), createdAt: NZ.today() }; s.accounts.push(a); }
+    // Остаток вводится «на сейчас»: операции до сегодняшнего дня в него уже входят
+    Object.assign(a, { name, type, cur, balance: cur === 'KZT' ? bal - NZ.sum(s.txs.filter((x) => x.acc === a.id && x.date >= NZ.today()), (x) => x.amount) : bal, since: NZ.today() });
+    if (cur !== 'KZT') s.txs.forEach((x) => { if (x.acc === a.id) delete x.acc; });
+    ui().sheet = null; save(); app().toast(t('c.saved'), app().restore(before));
+  };
+
+  // --- Рассрочка / кредит
+  function sheetLoan() {
+    const d = ui().sheetData;
+    const l = d.id ? (S().loans || []).find((x) => x.id === d.id) : null;
+    const st = l ? NZ.loanState(l, NZ.today()) : null;
+    const e = d.err || {};
+    const kind = d.kind || (l ? l.kind : 'inst');
+    const nextDef = l ? (st.nextDue || l.next) : NZ.addDays(NZ.today(), 10);
+    return [l ? l.name : t('loan.new'), '<form class="stack-14" data-form="loan">' +
+      '<div class="seg seg-full" role="group">' + ['inst', 'credit'].map((k) => '<button type="button" data-a="loanKind" data-v="' + k + '" aria-pressed="' + (kind === k) + '">' + esc(t('loan.kind.' + k)) + '</button>').join('') + '</div>' +
+      '<label class="field"><span>' + esc(t('loan.name')) + '</span><input id="ln-name" data-autofocus maxlength="60" value="' + esc(l ? l.name : '') + '" placeholder="' + esc(t('loan.namePh')) + '" aria-invalid="' + !!e.name + '">' + (e.name ? '<span class="err">' + esc(e.name) + '</span>' : '') + '</label>' +
+      '<label class="field"><span>' + esc(t('loan.bank')) + '</span><input id="ln-bank" maxlength="40" list="banks" value="' + esc(l ? l.bank || '' : 'Kaspi') + '"><datalist id="banks"><option value="Kaspi"><option value="Halyk"><option value="Freedom"><option value="Jusan"><option value="Home Credit"><option value="Forte"><option value="BCC"></datalist></label>' +
+      '<div class="grid-2"><label class="field"><span>' + esc(t('loan.monthly')) + '</span><input id="ln-monthly" inputmode="numeric" value="' + esc(l ? grp(l.monthly) : '') + '" aria-invalid="' + !!e.monthly + '">' + (e.monthly ? '<span class="err">' + esc(e.monthly) + '</span>' : '') + '</label>' +
+      '<label class="field"><span>' + esc(t('loan.count')) + '</span><input id="ln-left" inputmode="numeric" value="' + esc(l ? st.remaining : '') + '" placeholder="12" aria-invalid="' + !!e.left + '">' + (e.left ? '<span class="err">' + esc(e.left) + '</span>' : '') + '</label></div>' +
+      '<label class="field"><span>' + esc(t('loan.nextDate')) + '</span><input id="ln-next" type="date" value="' + esc(nextDef) + '"></label>' +
+      '<p class="small muted">' + esc(t('loan.hint')) + '</p>' +
+      '<button class="btn btn-primary btn-lg" type="submit">' + esc(t('c.save')) + '</button>' +
+      (l ? '<button type="button" class="btn btn-danger-t" data-a="loanDel" data-v="' + l.id + '">' + icon('trash', 18) + esc(t('loan.del')) + '</button>' : '') + '</form>'];
+  }
+  EXT.sheets.loan = sheetLoan;
+  Object.assign(EXT.actions, {
+    loanNew() { app().openSheet('loan', {}); },
+    loanOpen(el) { app().openSheet('loan', { id: el.dataset.v }); },
+    loanKind(el) {
+      const ids = ['ln-name', 'ln-bank', 'ln-monthly', 'ln-left', 'ln-next'];
+      const vals = ids.map((i) => (document.getElementById(i) || {}).value);
+      ui().sheetData.kind = el.dataset.v; app().renderSheet();
+      ids.forEach((i, k) => { const x = document.getElementById(i); if (x && vals[k] != null) x.value = vals[k]; });
+    },
+    loanDel(el) {
+      const s = S(); const before = app().snapshot();
+      s.loans = s.loans.filter((x) => x.id !== el.dataset.v);
+      ui().sheet = null; save(); app().toast(t('loan.deleted'), app().restore(before));
+    }
+  });
+  EXT.forms.loan = function () {
+    const s = S(); const d = ui().sheetData;
+    const name = document.getElementById('ln-name').value.trim();
+    const monthly = num(document.getElementById('ln-monthly').value);
+    const left = num(document.getElementById('ln-left').value);
+    const next = document.getElementById('ln-next').value || NZ.today();
+    const e = {};
+    if (!name) e.name = t('loan.errName');
+    if (!monthly) e.monthly = t('loan.errMonthly');
+    if (!left || left > 600) e.left = t('loan.errLeft');
+    if (Object.keys(e).length) { d.err = e; app().renderSheet(); return; }
+    const before = app().snapshot();
+    let l = d.id ? s.loans.find((x) => x.id === d.id) : null;
+    if (!l) { l = { id: NZ.uid(), createdAt: NZ.today() }; s.loans.push(l); }
+    Object.assign(l, { name, bank: document.getElementById('ln-bank').value.trim(), kind: d.kind || l.kind || 'inst', monthly, left, next });
+    ui().sheet = null; save();
+    app().toast(t('loan.saved', M(NZ.safeToday(s, NZ.today()).value)), app().restore(before));
+  };
+
+  // --- В листе «Новая операция»: счёт и «семейная трата»
+  EXT.addExtras.push(function (a) {
+    const s = S();
+    const accs = (s.accounts || []).filter((x) => x.cur === 'KZT');
+    let h = '';
+    if (accs.length) {
+      h += '<div class="field"><span>' + esc(t('acc.from')) + '</span><div class="row-gap wrap">' + [{ id: '', name: t('acc.none') }].concat(accs).map((x) => '<button type="button" class="chip-btn" data-a="addAcc" data-v="' + x.id + '" aria-pressed="' + ((a.acc || '') === x.id) + '">' + esc(x.name) + '</button>').join('') + '</div></div>';
+    }
+    if (s.family && s.family.family) h += '<label class="check"><input type="checkbox" data-ch="addFam" ' + (a.fam ? 'checked' : '') + '><span>' + esc(t('fam.mark', s.family.family.name)) + '</span></label>';
+    return h;
+  });
+  EXT.actions.addAcc = (el) => { ui().add.acc = el.dataset.v; app().renderSheet(); };
+  EXT.change.addFam = (el) => { ui().add.fam = el.checked; };
+  EXT.addApply.push(function (tx, a) {
+    if (a.acc) tx.acc = a.acc;
+    if (a.fam) tx.fam = true;
+    S().profile.lastAcc = a.acc || '';
+  });
+
+  /* ================= ЭКСПОРТ В EXCEL ================= */
+  EXT.actions.exportCsv = function () {
+    const s = S();
+    if (!s.txs.length) { app().toast(t('exp.none')); return; }
+    const csv = NZ.exportCsv(s);
+    const name = NZ.exportName();
+    if (has('saveFile')) {
+      let r = '';
+      try { r = String(nat().saveFile(name, 'text/csv', csv) || ''); } catch (e) { r = ''; }
+      if (r === 'picker') return; // Android 8–9: пользователь выбирает папку, итог — в NZ.onFileSaved
+      app().toast(r ? t('exp.savedAndroid', name) : t('exp.failed'));
+      return;
+    }
+    try {
+      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = name; a.rel = 'noopener';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      app().toast(t('exp.saved', s.txs.length));
+    } catch (e) { app().toast(t('exp.failed')); }
+  };
+
+  NZ.onFileSaved = (ok) => app().toast(ok ? t('exp.saved', S().txs.length) : t('exp.failed'));
+
+  /* ================= PIN-КОД И ОТПЕЧАТОК / FACE ID =================
+     Только на этом устройстве: PIN хранится как хеш с солью, в синхронизацию не попадает.
+     Блокировка — при запуске и если приложение было свёрнуто дольше минуты. */
+  let unlocked = false;
+  let hiddenAt = 0;
+  let pinFails = 0; let pinWaitUntil = 0;
+  let webBio = false;
+  const lockOn = () => { const s = S(); return !!(s.lock && s.lock.hash && s.account && s.session); };
+  EXT.lock = {
+    active: () => lockOn() && !unlocked,
+    view() {
+      const u = ui();
+      const entry = u.pinEntry || '';
+      const wait = pinWaitUntil > Date.now() ? Math.ceil((pinWaitUntil - Date.now()) / 1000) : 0;
+      const bio = S().lock.bio && bioAvailable();
+      if (bio && !u.bioTried) { u.bioTried = true; setTimeout(() => EXT.actions.pinBio(), 300); }
+      return '<div class="solo"><div class="solo-in lock-in"><div class="brand-row">' + NZ.app.icon('lock', 26) + '<b>nummaza</b></div>' +
+        '<h1 class="h2">' + esc(t('pin.enter')) + '</h1><p class="muted">' + esc(t('pin.hello', S().account.name)) + '</p>' +
+        '<div class="pin-dots' + (u.pinErr ? ' is-err' : '') + '" aria-label="' + esc(t('pin.dots', entry.length)) + '">' + [0, 1, 2, 3].map((i) => '<i class="' + (i < entry.length ? 'on' : '') + '"></i>').join('') + '</div>' +
+        '<p class="err center" role="alert">' + esc(wait ? t('pin.wait', wait) : u.pinErr || '') + '</p>' +
+        pinPad('pinKey', wait > 0) +
+        '<div class="row-between">' + (bio ? '<button type="button" class="btn btn-sm" data-a="pinBio">' + esc(t('pin.bio')) + '</button>' : '<span></span>') + '<button type="button" class="link" data-a="pinForgot">' + esc(t('pin.forgot')) + '</button></div></div></div>';
+    }
+  };
+  function pinPad(action, disabled) {
+    return '<div class="keypad pin-pad">' + ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'del'].map((k) => k === '' ? '<span></span>' : '<button type="button" data-a="' + action + '" data-v="' + k + '" ' + (disabled ? 'disabled' : '') + (k === 'del' ? ' aria-label="' + esc(t('add.erase')) + '"' : '') + '>' + (k === 'del' ? '←' : k) + '</button>').join('') + '</div>';
+  }
+  function bioAvailable() {
+    if (has('bioAvailable')) { try { return !!nat().bioAvailable(); } catch (e) { return false; } }
+    return webBio;
+  }
+  function unlock() { unlocked = true; pinFails = 0; const u = ui(); u.pinEntry = ''; u.pinErr = ''; u.bioTried = false; app().render(); planReminders(true); }
+  NZ.onBio = (ok) => { if (ok) unlock(); };
+  const b64u = (buf) => btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const unb64u = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+  Object.assign(EXT.actions, {
+    async pinKey(el) {
+      const u = ui();
+      if (pinWaitUntil > Date.now()) return;
+      const k = el.dataset.v;
+      u.pinErr = '';
+      u.pinEntry = k === 'del' ? (u.pinEntry || '').slice(0, -1) : ((u.pinEntry || '') + k).slice(0, 4);
+      app().render();
+      if (u.pinEntry.length < 4) return;
+      const lk = S().lock;
+      const ok = (await NZ.hash(lk.salt, u.pinEntry)) === lk.hash;
+      if (ok) { unlock(); return; }
+      pinFails++;
+      u.pinEntry = '';
+      if (pinFails >= 5) { pinWaitUntil = Date.now() + 30000; pinFails = 0; setTimeout(() => app().render(), 30100); }
+      u.pinErr = t('pin.wrong');
+      if (navigator.vibrate) try { navigator.vibrate(80); } catch (e) { /* нет вибрации */ }
+      app().render();
+    },
+    async pinBio() {
+      if (has('bioAuth')) { try { nat().bioAuth(t('pin.bioTitle'), t('c.cancel')); } catch (e) { /* нет */ } return; }
+      const cred = S().lock && S().lock.cred;
+      if (!cred || !webBio) return;
+      try {
+        await navigator.credentials.get({ publicKey: { challenge: crypto.getRandomValues(new Uint8Array(32)), allowCredentials: [{ type: 'public-key', id: unb64u(cred) }], userVerification: 'required', timeout: 60000 } });
+        unlock();
+      } catch (e) { /* отменили — остаётся PIN */ }
+    },
+    pinForgot() {
+      app().openSheet('confirm', { title: t('pin.forgotT'), text: serverOn() ? t('pin.forgotServer') : t('pin.forgotLocal'), yes: t('pin.forgotYes'), fn: async () => {
+        const s = S();
+        s.lock = null; unlocked = true;
+        if (serverOn()) { await app().A.logout({ dataset: { force: '1' } }); return; }
+        NZ.wipe(); app().state = NZ.defaultState(); app().render();
+      } });
+    },
+    pinToggle() {
+      const s = S();
+      if (s.lock && s.lock.hash) {
+        const before = app().snapshot();
+        s.lock = null; save(); app().toast(t('pin.off'), app().restore(before)); return;
+      }
+      ui().pinSet = { step: 1, first: '', entry: '' };
+      app().openSheet('pinSet');
+    },
+    pinChange() { ui().pinSet = { step: 1, first: '', entry: '' }; app().openSheet('pinSet'); },
+    async pinSetKey(el) {
+      const p = ui().pinSet;
+      const k = el.dataset.v;
+      p.err = '';
+      p.entry = k === 'del' ? p.entry.slice(0, -1) : (p.entry + k).slice(0, 4);
+      app().renderSheet();
+      if (p.entry.length < 4) return;
+      if (p.step === 1) { p.first = p.entry; p.entry = ''; p.step = 2; app().renderSheet(); return; }
+      if (p.entry !== p.first) { p.step = 1; p.first = ''; p.entry = ''; p.err = t('pin.mismatch'); app().renderSheet(); return; }
+      const s = S();
+      const salt = NZ.uid();
+      s.lock = Object.assign({}, s.lock || {}, { salt, hash: await NZ.hash(salt, p.entry) });
+      unlocked = true;
+      ui().sheet = null; save(); app().toast(t('pin.on'));
+    },
+    async bioToggle() {
+      const s = S();
+      if (!s.lock) return;
+      if (s.lock.bio) { s.lock.bio = false; save(); return; }
+      if (has('bioAuth')) { s.lock.bio = true; save(); app().toast(t('pin.bioOn')); return; }
+      try {
+        const c = await navigator.credentials.create({ publicKey: {
+          challenge: crypto.getRandomValues(new Uint8Array(32)), rp: { name: 'NUMMAZA' },
+          user: { id: crypto.getRandomValues(new Uint8Array(16)), name: s.account.login, displayName: s.account.name },
+          pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+          authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged' }, timeout: 60000
+        } });
+        s.lock.bio = true; s.lock.cred = b64u(c.rawId); save(); app().toast(t('pin.bioOn'));
+      } catch (e) { app().toast(t('pin.bioFail')); }
+    }
+  });
+  EXT.sheets.pinSet = function () {
+    const p = ui().pinSet || { step: 1, entry: '' };
+    return [t(p.step === 1 ? 'pin.setT' : 'pin.repeatT'), '<p class="muted center">' + esc(t(p.step === 1 ? 'pin.setS' : 'pin.repeatS')) + '</p>' +
+      '<div class="pin-dots' + (p.err ? ' is-err' : '') + '">' + [0, 1, 2, 3].map((i) => '<i class="' + (i < p.entry.length ? 'on' : '') + '"></i>').join('') + '</div>' +
+      '<p class="err center" role="alert">' + esc(p.err || '') + '</p>' + pinPad('pinSetKey', false)];
+  };
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { hiddenAt = Date.now(); return; }
+    if (lockOn() && unlocked && hiddenAt && Date.now() - hiddenAt > 60000) { unlocked = false; ui().bioTried = false; ui().sheet = null; app().render(); }
+  });
+  if (window.PublicKeyCredential && PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable && /^https:$/.test(location.protocol)) {
+    PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then((v) => { webBio = !!v; }).catch(() => {});
+  }
+
+  /* ================= НАПОМИНАНИЯ И ВИДЖЕТ ================= */
+  const PUSH_KEY = 'nummaza.push';
+  const pushEndpoint = () => { try { return localStorage.getItem(PUSH_KEY); } catch (e) { return null; } };
+  function notifState() {
+    if (has('setReminders')) { try { return nat().notifPermission ? nat().notifPermission() : 'granted'; } catch (e) { return 'granted'; } }
+    if (!('Notification' in window) || !('serviceWorker' in navigator) || !window.PushManager) return isIos() && !standalone() ? 'install' : 'unsupported';
+    if (Notification.permission === 'granted' && pushEndpoint()) return 'granted';
+    return Notification.permission === 'denied' ? 'denied' : 'default';
+  }
+  const isIos = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+  const standalone = () => navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+  async function enableNotif() {
+    if (has('setReminders')) {
+      if (has('requestNotifPermission')) { try { nat().requestNotifPermission(); } catch (e) { /* старый APK */ } }
+      planReminders(true); app().render(); return;
+    }
+    if (!serverOn()) { app().toast(t('notif.needServer')); return; }
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') { app().render(); return; }
+      const key = (await NZ.api.pub('/push/key')).key;
+      if (!key) { app().toast(t('notif.serverOff')); return; }
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: unb64u(key) });
+      await NZ.api.call('/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+      try { localStorage.setItem(PUSH_KEY, sub.endpoint); } catch (e) { /* хранилище недоступно */ }
+      await planReminders(true);
+      app().toast(t('notif.on'));
+    } catch (e) { app().toast(t('notif.fail')); }
+    app().render();
+  }
+  NZ.onNotifPermission = () => { planReminders(true); app().render(); }; // Android: ответ на системный запрос разрешения
+
+  let planTimer = null; let lastPlan = '';
+  function planReminders(force) {
+    clearTimeout(planTimer);
+    return new Promise((resolve) => {
+      planTimer = setTimeout(async () => {
+        const s = S();
+        if (!s.account || !s.session || EXT.lock.active()) return resolve();
+        const plan = NZ.reminderPlan(s);
+        const key = JSON.stringify(plan.map((p) => [p.id, p.at, p.body]));
+        if (key === lastPlan && !force) return resolve();
+        lastPlan = key;
+        try {
+          if (has('setReminders')) nat().setReminders(JSON.stringify(plan));
+          else if (pushEndpoint() && serverOn() && navigator.onLine !== false) await NZ.api.call('/push/plan', { method: 'POST', body: { endpoint: pushEndpoint(), items: plan } });
+        } catch (e) { lastPlan = ''; /* без сети — попробуем при следующем изменении */ }
+        resolve();
+      }, force ? 0 : 1500);
+    });
+  }
+  function notifyNow(title, body) {
+    if (has('notifyNow')) { try { nat().notifyNow(title, body); } catch (e) { /* старый APK */ } return; }
+    if ('Notification' in window && Notification.permission === 'granted' && navigator.serviceWorker && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.ready.then((r) => r.showNotification(title, { body, icon: 'icons/icon-192.png', tag: 'env' })).catch(() => {});
+    }
+  }
+  function updateWidget() {
+    if (!has('setWidget')) return;
+    const s = S();
+    if (!s.account || !s.profile.onboarded) return;
+    const st = NZ.safeToday(s, NZ.today());
+    try { nat().setWidget(JSON.stringify({ label: t('home.safe'), value: M(st.value), sub: s.profile.income ? t('home.daysLeft', t('c.days', st.daysLeft), M(Math.max(0, st.leftTotal))) : '' })); } catch (e) { /* старый APK */ }
+  }
+  let envBefore = null;
+  EXT.onSaved.push(function (s) {
+    if (!s.account || !s.session || !s.profile.onboarded) return;
+    const now = NZ.envelopes(s, NZ.today());
+    if (envBefore && (s.profile.notif || {}).env !== false) {
+      NZ.envCrossings(envBefore, now).forEach((c) => notifyNow(t('rem.envT'), t(c.over ? 'rem.envOver' : 'rem.envB', t('cat.' + c.cat), c.pct)));
+    }
+    envBefore = now;
+    planReminders(false);
+    updateWidget();
+    famMaybeSync();
+  });
+
+  // Карточка «Напоминания» в профиле (заменяет прежнюю)
+  EXT.notifCard = function () {
+    const s = S();
+    const n = s.profile.notif;
+    const st = notifState();
+    const row = (k, label) => '<div class="row-between"><span>' + esc(label) + '</span>' + sw(n[k] !== false && !!(n[k] || k === 'env'), 'notif2', label, k) + '</div>';
+    let status = '';
+    if (st === 'granted') status = '<p class="small teal">' + esc(t('notif.active')) + '</p>';
+    else if (st === 'install') status = '<p class="small muted">' + esc(t('notif.install')) + '</p>';
+    else if (st === 'unsupported') status = '<p class="small muted">' + esc(t('notif.unsupported')) + '</p>';
+    else if (st === 'denied') status = '<p class="small warn-t">' + esc(t('notif.denied')) + '</p>' + (has('requestNotifPermission') ? '<button type="button" class="btn btn-sm" data-a="notifEnable">' + esc(t('notif.enable')) + '</button>' : '');
+    else status = '<button type="button" class="btn btn-sm btn-primary" data-a="notifEnable">' + esc(t('notif.enable')) + '</button>';
+    return '<section class="card stack-14" aria-labelledby="notif-h"><h2 id="notif-h" class="cap small muted">' + esc(t('prof.notif')) + '</h2>' + status +
+      row('limit', t('notif.limit')) + row('pay', t('notif.pay')) + row('env', t('notif.env')) + row('tips', t('prof.nTips')) + '</section>';
+  };
+  Object.assign(EXT.actions, {
+    notifEnable: enableNotif,
+    notif2(el) { const n = S().profile.notif; const k = el.dataset.v; n[k] = !(n[k] !== false && !!(n[k] || k === 'env')); save(); planReminders(true); }
+  });
+
+  /* ================= ПРОФИЛЬ: безопасность, почта, семья, экспорт ================= */
+  EXT.profileCards.push(function () {
+    const s = S();
+    const on = !!(s.lock && s.lock.hash);
+    const bio = bioAvailable() || has('bioAuth');
+    return '<section class="card stack-14" aria-labelledby="sec-h"><h2 id="sec-h" class="cap small muted">' + esc(t('pin.section')) + '</h2>' +
+      '<div class="row-between"><span>' + esc(t('pin.toggle')) + '</span>' + sw(on, 'pinToggle', t('pin.toggle')) + '</div>' +
+      (on && bio ? '<div class="row-between"><span>' + esc(t('pin.bioToggle')) + '</span>' + sw(s.lock.bio, 'bioToggle', t('pin.bioToggle')) + '</div>' : '') +
+      (on ? '<button type="button" class="link" data-a="pinChange">' + esc(t('pin.change')) + '</button>' : '<p class="small muted">' + esc(t('pin.note')) + '</p>') + '</section>';
+  });
+  EXT.profileCards.push(function () {
+    if (!serverOn()) return '';
+    const a = S().account;
+    if (a.email === undefined && !ui().meLoading) {
+      ui().meLoading = true;
+      NZ.api.call('/me').then((r) => { a.email = r.user.email || null; NZ.save(S()); app().render(); }).catch(() => {}).finally(() => { ui().meLoading = false; });
+    }
+    const editing = ui().emailEdit || !a.email;
+    const isLoginEmail = a.login.indexOf('@') > 0;
+    return '<section class="card stack-10" aria-labelledby="rec-h"><h2 id="rec-h" class="cap small muted">' + esc(t('rec.section')) + '</h2>' +
+      (a.email && !ui().emailEdit ? '<p class="small">' + esc(t('rec.has', a.email.replace(/^(.).*(@.*)$/, '$1•••$2'))) + '</p>' + (isLoginEmail ? '' : '<button type="button" class="link" data-a="emailEdit">' + esc(t('rec.change')) + '</button>') : '') +
+      (editing && !(isLoginEmail && a.email) ? '<form class="stack-10" data-form="email"><label class="field"><span>' + esc(t('rec.label')) + '</span><input id="rec-email" type="email" inputmode="email" autocomplete="email" value="' + esc(a.email || '') + '" placeholder="name@mail.kz" aria-invalid="' + !!ui().emailErr + '">' + (ui().emailErr ? '<span class="err">' + esc(ui().emailErr) + '</span>' : '<span class="hint">' + esc(t('rec.hint')) + '</span>') + '</label><button class="btn btn-sm btn-primary" type="submit">' + esc(t('c.save')) + '</button></form>' : '') + '</section>';
+  });
+  EXT.actions.emailEdit = () => { ui().emailEdit = true; app().render(); };
+  EXT.forms.email = async function () {
+    const v = document.getElementById('rec-email').value.trim();
+    try {
+      const r = await NZ.api.call('/me/email', { method: 'PUT', body: { email: v } });
+      S().account.email = r.user.email; ui().emailEdit = false; ui().emailErr = ''; save(); app().toast(t('rec.saved'));
+    } catch (e) { ui().emailErr = e.code === 'validation' ? t('rec.errEmail') : e.code === 'offline' ? t('auth.errOffline') : t('auth.errServer'); app().render(); }
+  };
+  EXT.profileCards.push(function () {
+    const s = S();
+    const f = s.family && s.family.family;
+    return '<section class="card stack-10"><h2 class="cap small muted">' + esc(t('prof.more')) + '</h2>' +
+      '<a class="li li-link" href="#wallet"><span class="grow">' + esc(t('wal.title')) + '</span>' + icon('chev', 16) + '</a>' +
+      (NZ.api && NZ.api.enabled() ? '<a class="li li-link" href="#family"><span class="grow">' + esc(t('fam.title')) + (f ? ' · ' + esc(f.name) : '') + '</span>' + icon('chev', 16) + '</a>' : '') +
+      '<button type="button" class="li li-link" data-a="exportCsv"><span class="grow">' + esc(t('exp.btn')) + '</span>' + icon('upload', 16) + '</button></section>';
+  });
+
+  /* ================= ВОССТАНОВЛЕНИЕ ПАРОЛЯ ПО ПОЧТЕ ================= */
+  EXT.sheets.forgotServer = function () {
+    const d = ui().sheetData;
+    if (!d.step) d.step = 1;
+    const err = d.err ? '<p class="err-box" role="alert">' + esc(d.err) + '</p>' : '';
+    if (d.step === 1) return [t('rec.title'), '<form class="stack-14" data-form="forgot1"><p class="muted">' + esc(t('rec.s1')) + '</p><label class="field"><span>' + esc(t('auth.login')) + '</span><input id="fg-login" data-autofocus autocomplete="username" value="' + esc(d.login || ui().authLogin || '') + '" placeholder="' + esc(t('auth.loginPh')) + '"></label>' + err + '<button class="btn btn-primary btn-lg" type="submit" ' + (d.busy ? 'disabled' : '') + '>' + esc(t('rec.send')) + '</button><p class="small muted">' + esc(t('rec.noEmail')) + '</p></form>'];
+    return [t('rec.title'), '<form class="stack-14" data-form="forgot2"><p class="muted">' + esc(t('rec.s2')) + '</p><label class="field"><span>' + esc(t('rec.code')) + '</span><input id="fg-code" data-autofocus inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000"></label><label class="field"><span>' + esc(t('rec.newPw')) + '</span><input id="fg-pw" type="password" autocomplete="new-password"><span class="hint">' + esc(t('auth.pwHint')) + '</span></label>' + err + '<button class="btn btn-primary btn-lg" type="submit" ' + (d.busy ? 'disabled' : '') + '>' + esc(t('rec.reset')) + '</button><button type="button" class="link" data-a="forgotBack">' + esc(t('rec.again')) + '</button></form>'];
+  };
+  EXT.actions.forgotBack = () => { const d = ui().sheetData; d.step = 1; d.err = ''; app().renderSheet(); };
+  EXT.forms.forgot1 = async function () {
+    const d = ui().sheetData;
+    d.login = document.getElementById('fg-login').value.trim();
+    d.busy = true; d.err = ''; app().renderSheet();
+    try {
+      await NZ.api.pub('/auth/forgot', { method: 'POST', body: { login: d.login, lang: NZ.lang } });
+      d.step = 2;
+    } catch (e) { d.err = e.code === 'validation' ? t('auth.errLogin') : e.code === 'offline' ? t('auth.errOffline') : e.code === 'rate_limited' ? t('auth.errRate') : t('auth.errServer'); }
+    d.busy = false; app().renderSheet();
+  };
+  EXT.forms.forgot2 = async function () {
+    const d = ui().sheetData;
+    const code = document.getElementById('fg-code').value.replace(/\D/g, '');
+    const pw = document.getElementById('fg-pw').value;
+    if (pw.length < 8 || !/[a-zа-яәғқңөұүһі]/i.test(pw) || !/\d/.test(pw)) { d.err = t('auth.errPw'); app().renderSheet(); return; }
+    d.busy = true; d.err = ''; app().renderSheet();
+    try {
+      const r = await NZ.api.pub('/auth/reset', { method: 'POST', body: { login: d.login, code, password: pw } });
+      const user = NZ.api.adopt(r);
+      ui().sheet = null; app().renderSheet();
+      await app().serverAuthDone('in', user);
+      app().toast(t('rec.done'));
+      return;
+    } catch (e) {
+      d.err = e.code === 'bad_code' ? t('rec.badCode', e.data.attemptsLeft == null ? '' : e.data.attemptsLeft) : e.code === 'code_expired' ? t('rec.expired') : e.code === 'validation' ? t('auth.errPw') : e.code === 'offline' ? t('auth.errOffline') : t('auth.errServer');
+    }
+    d.busy = false; app().renderSheet();
+  };
+
+  /* ================= СЕМЕЙНЫЙ БЮДЖЕТ ================= */
+  const FAM_DAYS = 120;
+  let famSent = null; let famTimer = null; let famBusy = false;
+  const famMine = (s) => s.txs.filter((x) => x.fam && x.date >= NZ.addDays(NZ.today(), -FAM_DAYS + 1)).map((x) => ({ id: x.id, date: x.date, amount: x.amount, cat: x.cat, merchant: x.merchant || '' }));
+  async function famLoad(push) {
+    if (!serverOn() || famBusy) return;
+    famBusy = true;
+    try {
+      const s = S();
+      const mine = famMine(s);
+      const r = push && s.family && s.family.family ? await NZ.api.call('/family/sync', { method: 'POST', body: { mine } }) : await NZ.api.call('/family');
+      if (push) famSent = JSON.stringify(mine);
+      setFamily(r);
+      if (r.family && famSent === null) { famSent = ''; famMaybeSync(); }
+    } catch (e) { /* без сети — в следующий раз */ }
+    famBusy = false;
+  }
+  function setFamily(r) {
+    const s = S();
+    s.family = r && r.family ? Object.assign({ at: Date.now() }, r) : null;
+    if (!s.family) s.txs.forEach((x) => { if (x.fam) delete x.fam; });
+    NZ.save(s); app().render();
+  }
+  function famMaybeSync() {
+    const s = S();
+    if (!serverOn() || !s.family || !s.family.family) return;
+    if (JSON.stringify(famMine(s)) === famSent) return;
+    clearTimeout(famTimer);
+    famTimer = setTimeout(() => famLoad(true), 2500);
+  }
+  function famStats(f) {
+    const ym = NZ.ym(NZ.today());
+    const month = (f.records || []).filter((r) => r.date.slice(0, 7) === ym && r.amount < 0);
+    const by = {};
+    month.forEach((r) => { by[r.by] = (by[r.by] || 0) - r.amount; });
+    return { total: NZ.sum(month, (r) => -r.amount), by, month };
+  }
+  function viewFamily() {
+    const s = S();
+    const head = '<header class="page-head"><h1 class="h2">' + esc(t('fam.title')) + '</h1></header>';
+    if (!serverOn()) return head + '<section class="card empty"><p class="muted">' + esc(t('fam.needServer')) + '</p></section>';
+    if (!s.family || !s.family.family) {
+      if (!ui().famChecked) { ui().famChecked = true; famLoad(false); }
+      return head + '<section class="card stack-14"><h2 class="h3">' + esc(t('fam.introT')) + '</h2><p class="muted">' + esc(t('fam.introS')) + '</p>' +
+        '<form class="stack-10" data-form="famCreate"><label class="field"><span>' + esc(t('fam.name')) + '</span><input id="fam-name" maxlength="40" placeholder="' + esc(t('fam.namePh')) + '"></label><button class="btn btn-primary" type="submit">' + esc(t('fam.create')) + '</button></form></section>' +
+        '<section class="card stack-10"><h2 class="h3">' + esc(t('fam.joinT')) + '</h2><form class="stack-10" data-form="famJoin"><label class="field"><span>' + esc(t('fam.code')) + '</span><input id="fam-code" maxlength="6" autocapitalize="characters" autocomplete="off" placeholder="ABC234" aria-invalid="' + !!ui().famErr + '">' + (ui().famErr ? '<span class="err">' + esc(ui().famErr) + '</span>' : '') + '</label><button class="btn" type="submit">' + esc(t('fam.join')) + '</button></form></section>';
+    }
+    const f = s.family;
+    const st = famStats(f);
+    const lim = f.family.limit;
+    const pct = lim ? Math.min(100, Math.round((st.total / lim) * 100)) : 0;
+    const name = (id) => { const m = f.members.find((x) => x.id === id); return m ? m.name : '—'; };
+    const recent = (f.records || []).slice(0, 30).map((r) => '<li class="li"><span class="dot" style="background:' + (NZ.CATS[r.cat] ? NZ.CATS[r.cat].color : 'var(--line)') + '"></span><span class="grow"><b>' + esc(r.merchant || t('cat.' + r.cat)) + '</b><span class="small muted block">' + esc(NZ.fmtDate(r.date) + ' · ' + name(r.by)) + '</span></span><b>' + M(r.amount, { sign: true }) + '</b></li>').join('');
+    return head +
+      '<section class="card card-ink stack-6"><span class="small teal-l">' + esc(f.family.name + ' · ' + NZ.monthName(NZ.ym(NZ.today()))) + '</span><b class="h1">' + M(st.total) + '</b>' +
+      (lim ? '<div class="bar bar-light"><i style="width:' + pct + '%"></i></div><span class="small">' + esc(st.total > lim ? t('fam.over', M(st.total - lim)) : t('fam.left', M(lim - st.total), M(lim))) + '</span>' : '<span class="small">' + esc(t('fam.noLimit')) + '</span>') + '</section>' +
+      '<section class="card stack-10"><div class="row-between"><h2 class="h3">' + esc(t('fam.members')) + '</h2><button type="button" class="btn btn-sm" data-a="famInvite">' + esc(t('fam.invite')) + '</button></div>' +
+      (ui().famCode ? '<p class="note">' + esc(t('fam.codeIs', ui().famCode)) + '</p>' : '') +
+      '<ul class="list">' + f.members.map((m) => '<li class="li"><span class="ava ava-sm" aria-hidden="true">' + esc(m.name[0].toUpperCase()) + '</span><span class="grow"><b>' + esc(m.name) + (m.me ? ' (' + esc(t('fam.me')) + ')' : '') + '</b><span class="small muted block">' + esc(m.owner ? t('fam.owner') : t('fam.member')) + '</span></span><b>' + M(st.by[m.id] || 0) + '</b>' + (f.family.isOwner && !m.me ? '<button type="button" class="icon-btn icon-btn-sm" data-a="famKick" data-v="' + m.id + '" aria-label="' + esc(t('fam.kick', m.name)) + '">' + icon('close', 16) + '</button>' : '') + '</li>').join('') + '</ul></section>' +
+      (f.family.isOwner ? '<section class="card stack-10"><form class="stack-10" data-form="famLimit"><label class="field"><span>' + esc(t('fam.limitL')) + '</span><input id="fam-limit" inputmode="numeric" value="' + esc(lim ? grp(lim) : '') + '"></label><button class="btn btn-sm" type="submit">' + esc(t('c.save')) + '</button></form></section>' : '') +
+      '<section class="card stack-10"><h2 class="h3">' + esc(t('fam.ops')) + '</h2><p class="small muted">' + esc(t('fam.how')) + '</p>' + (recent ? '<ul class="list">' + recent + '</ul>' : '<p class="muted small">' + esc(t('fam.none')) + '</p>') + '</section>' +
+      '<button type="button" class="btn btn-danger-t" data-a="famLeave">' + esc(t('fam.leave')) + '</button>';
+  }
+  EXT.views.family = viewFamily;
+  EXT.homeCards.push(function () {
+    const f = S().family;
+    if (!f || !f.family) return '';
+    const st = famStats(f);
+    const lim = f.family.limit;
+    return '<section class="card stack-10" aria-labelledby="fam-h"><div class="row-between"><h2 id="fam-h" class="h3">' + esc(f.family.name) + '</h2><a href="#family" class="link">' + esc(t('wal.open')) + '</a></div><div class="row-between"><span class="muted">' + esc(t('fam.month')) + '</span><b>' + M(st.total) + (lim ? ' / ' + M(lim) : '') + '</b></div>' + (lim ? '<div class="bar"><i style="width:' + Math.min(100, Math.round(st.total / lim * 100)) + '%"></i></div>' : '') + '</section>';
+  });
+  const famErr = (e) => ({ bad_code: t('fam.badCode'), family_full: t('fam.full'), already_in_family: t('fam.already'), offline: t('auth.errOffline') })[e.code] || t('auth.errServer');
+  EXT.forms.famCreate = async function () {
+    const name = document.getElementById('fam-name').value.trim() || t('fam.namePh');
+    try { setFamily(await NZ.api.call('/family', { method: 'POST', body: { name } })); famSent = null; famMaybeSync(); app().toast(t('fam.created')); } catch (e) { app().toast(famErr(e)); }
+  };
+  EXT.forms.famJoin = async function () {
+    const code = document.getElementById('fam-code').value.trim().toUpperCase();
+    try { setFamily(await NZ.api.call('/family/join', { method: 'POST', body: { code } })); ui().famErr = ''; famSent = null; famMaybeSync(); app().toast(t('fam.joined')); } catch (e) { ui().famErr = famErr(e); app().render(); }
+  };
+  EXT.forms.famLimit = async function () {
+    try { setFamily(await NZ.api.call('/family', { method: 'PUT', body: { limit: num(document.getElementById('fam-limit').value) } })); app().toast(t('c.saved')); } catch (e) { app().toast(famErr(e)); }
+  };
+  Object.assign(EXT.actions, {
+    async famInvite() {
+      try { const r = await NZ.api.call('/family/invite', { method: 'POST', body: {} }); ui().famCode = r.code; app().render(); } catch (e) { app().toast(famErr(e)); }
+    },
+    famKick(el) {
+      const m = S().family.members.find((x) => x.id === el.dataset.v);
+      app().openSheet('confirm', { title: t('fam.kick', m.name), text: t('fam.kickText'), yes: t('fam.kickYes'), fn: async () => { try { setFamily(await NZ.api.call('/family/members/' + encodeURIComponent(m.id), { method: 'DELETE' })); } catch (e) { app().toast(famErr(e)); } } });
+    },
+    famLeave() {
+      app().openSheet('confirm', { title: t('fam.leave'), text: t('fam.leaveText'), yes: t('fam.leaveYes'), fn: async () => { try { await NZ.api.call('/family/leave', { method: 'POST', body: {} }); ui().famCode = ''; setFamily(null); } catch (e) { app().toast(famErr(e)); } } });
+    }
+  });
+  // Пометить существующую операцию как семейную (лист операции)
+  EXT.txExtras = function (x) {
+    const f = S().family;
+    if (!f || !f.family || x.amount >= 0) return '';
+    return '<label class="check"><input type="checkbox" data-ch="txFam" ' + (x.fam ? 'checked' : '') + '><span>' + esc(t('fam.mark', f.family.name)) + '</span></label>';
+  };
+  EXT.change.txFam = function (el) {
+    const x = S().txs.find((y) => y.id === ui().sheetData.id);
+    if (!x) return;
+    if (el.checked) x.fam = true; else delete x.fam;
+    NZ.save(S());
+  };
+
+  /* ================= ЗАПУСК ================= */
+  function refreshRates() {
+    if (!NZ.api || !NZ.api.enabled() || navigator.onLine === false) return;
+    const at = (NZ.rates && NZ.rates.fetchedAt) || 0;
+    if (Date.now() - at < 6 * 3600 * 1000) return;
+    NZ.api.pub('/rates').then((r) => { NZ.setRates(Object.assign(r, {})); NZ.rates.fetchedAt = Date.now(); try { localStorage.setItem('nummaza.rates', JSON.stringify(NZ.rates)); } catch (e) { /* нет */ } if (ui().route === 'wallet') app().render(); }).catch(() => {});
+  }
+  NZ.moreStart = function () {
+    refreshRates();
+    planReminders(true);
+    updateWidget();
+    if (serverOn()) famLoad(!!(S().family && S().family.family));
+    envBefore = S().account ? NZ.envelopes(S(), NZ.today()) : null;
+  };
+})();
+
+</script>
+<script>
 /* NUMMAZA — интерфейс. Одна страница, маршруты через #hash, данные в localStorage. */
 (function () {
   'use strict';
@@ -1644,6 +2714,7 @@ NZ.API_URL = '';
   const M = (n, o) => NZ.money(n, o);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const today = () => NZ.today();
+  const EXT = NZ.ext;
 
   let S = NZ.load();
   const SERVER = () => !!(NZ.api && NZ.api.enabled());
@@ -1717,7 +2788,7 @@ NZ.API_URL = '';
 
   /* ---------- Маршруты ---------- */
   const ROUTES = ['home', 'envelopes', 'numa', 'statements', 'goals', 'profile', 'recap', 'delete', 'ops'];
-  function readRoute() { const h = (location.hash || '').replace('#', ''); ui.route = ROUTES.includes(h) ? h : 'home'; }
+  function readRoute() { const h = (location.hash || '').replace('#', ''); ui.route = ROUTES.includes(h) || EXT.views[h] ? h : 'home'; }
   function go(r) { if (location.hash !== '#' + r) location.hash = r; else { ui.route = r; render(); } }
 
   /* ---------- Главный рендер ---------- */
@@ -1734,6 +2805,7 @@ NZ.API_URL = '';
     const app = document.getElementById('app');
     let html;
     if (!S.account || !S.session) html = viewAuth();
+    else if (EXT.lock && EXT.lock.active()) html = EXT.lock.view();
     else if (!S.profile.onboarded) html = viewOnboarding();
     else if (ui.route === 'recap') html = viewRecap();
     else if (ui.route === 'delete') html = viewDelete();
@@ -1793,9 +2865,9 @@ NZ.API_URL = '';
   function shell() {
     const tabs = [['home', 'home'], ['envelopes', 'env'], ['numa', 'numa'], ['goals', 'goal'], ['statements', 'upload']];
     const nav = '<nav class="tabbar" aria-label="' + esc(t('c.menu')) + '">' + '<a class="brand" href="#home">' + logo(30) + '<span>nummaza</span></a>' + tabs.map(([r, i]) => '<a href="#' + r + '" ' + (ui.route === r ? 'aria-current="page"' : '') + '>' + icon(i, 22) + '<span>' + esc(t('nav.' + r)) + '</span></a>').join('') + '<a class="side-only" href="#profile" ' + (ui.route === 'profile' ? 'aria-current="page"' : '') + '>' + '<span class="ava ava-sm" aria-hidden="true">' + esc((S.account.name || '?')[0].toUpperCase()) + '</span><span>' + esc(t('nav.profile')) + '</span></a></nav>';
-    const fab = ['home', 'envelopes', 'goals'].includes(ui.route) ? '<button type="button" class="fab" data-a="openAdd" aria-label="' + esc(t('nav.add')) + '">' + icon('plus', 26) + '</button>' : '';
+    const fab = ['home', 'envelopes', 'goals', 'wallet', 'family'].includes(ui.route) ? '<button type="button" class="fab" data-a="openAdd" aria-label="' + esc(t('nav.add')) + '">' + icon('plus', 26) + '</button>' : '';
     const views = { home: viewHome, envelopes: viewEnvelopes, numa: viewNuma, statements: viewStatements, goals: viewGoals, profile: viewProfile, ops: viewOps };
-    return '<div class="layout">' + nav + '<main class="main" id="main">' + views[ui.route]() + '</main>' + fab + '</div>';
+    return '<div class="layout">' + nav + '<main class="main" id="main">' + (views[ui.route] || EXT.views[ui.route])() + '</main>' + fab + '</div>';
   }
 
   /* ================= ВХОД / РЕГИСТРАЦИЯ ================= */
@@ -1846,9 +2918,13 @@ NZ.API_URL = '';
       else ui.authErr = { form: t('auth.errServer') };
       render(); focusFirstError(); return;
     }
-    // Другой человек на этом устройстве — начинаем с чистого состояния (язык и тема остаются)
-    const sameUser = !!(S.account && S.account.server && S.account.userId === user.id);
+    // Другой человек на этом устройстве — начинаем с чистого состояния (язык и тема остаются).
     // Вход: данные берём с сервера. Регистрация: введённое на устройстве до неё сохраняем и отправляем.
+    return serverAuthDone(mode, user);
+  }
+  // Конец входа через сервер: состояние устройства, синхронизация, переход на «Обзор»
+  async function serverAuthDone(mode, user) {
+    const sameUser = !!(S.account && S.account.server && S.account.userId === user.id);
     const reset = mode === 'in' ? !sameUser : !!(S.account && S.account.server && !sameUser);
     if (reset) {
       const keep = { lang: S.profile.lang || NZ.lang, theme: S.profile.theme };
@@ -1856,7 +2932,7 @@ NZ.API_URL = '';
       S.profile.lang = keep.lang; S.profile.theme = keep.theme;
     }
     if (!S.profile.lang) S.profile.lang = NZ.lang;
-    S.account = { name: user.name, login: user.login, userId: user.id, server: true };
+    S.account = { name: user.name, login: user.login, userId: user.id, server: true, email: user.email || null };
     S.session = true;
     S.sync = S.sync && sameUser ? S.sync : { cursor: 0, outbox: [], lastAt: 0, error: null, clock: 0 };
     if (mode === 'up') NZ.syncEnqueueAll(S); // профиль и всё введённое до регистрации — на сервер
@@ -2003,6 +3079,7 @@ NZ.API_URL = '';
     if (S.profile.notif.pay) grid.push('<section class="card" aria-labelledby="up-h"><h2 id="up-h" class="h3">' + esc(t('home.upH')) + '</h2>' + (s.upcomingList.length ? '<ul class="list">' + s.upcomingList.map((u) => '<li class="li"><span class="dot" style="background:' + NZ.CATS[u.cat].color + '"></span><span class="grow"><b>' + esc(u.merchant) + '</b><span class="muted small">' + esc(NZ.fmtDate(u.date)) + ' · ' + esc(t('cat.' + u.cat)) + '</span></span><b>' + M(-u.amount) + '</b></li>').join('') + '</ul>' : '<p class="muted">' + esc(t('home.upNone')) + '</p>') + '</section>');
     const tips = S.profile.notif.tips ? NZ.tips(S, td) : [];
     if (tips.length) grid.push('<section class="span-2" aria-labelledby="tips-h"><h2 id="tips-h" class="h3">' + esc(t('home.tipsH')) + '</h2><div class="tips">' + tips.map(tipCard).join('') + '</div></section>');
+    EXT.homeCards.forEach((f) => { const h = f(s); if (h) grid.push(h); });
     grid.push(goalsStrip());
     if (!noData) grid.push(recentCard());
     parts.push('<div class="home-grid">' + grid.join('') + '</div>');
@@ -2415,7 +3492,8 @@ NZ.API_URL = '';
       '<section class="card stack-14"><h2 class="cap small muted">' + esc(t('prof.appearance')) + '</h2><div class="field"><span>' + esc(t('c.lang')) + '</span>' + langSwitch().replace('seg-sm', 'seg-full') + '</div><div class="field"><span>' + esc(t('c.theme')) + '</span><div class="seg seg-full" role="group" aria-label="' + esc(t('c.theme')) + '">' + ['light', 'dark', 'system'].map((k) => '<button type="button" data-a="theme" data-v="' + k + '" aria-pressed="' + (S.profile.theme === k) + '">' + esc(t('c.' + k)) + '</button>').join('') + '</div></div></section>' +
       '<section class="card stack-14"><h2 class="cap small muted">' + esc(t('prof.budget')) + '</h2><label class="field"><span>' + esc(t('prof.income')) + '</span><input id="p-income" inputmode="numeric" data-ch="income" value="' + esc(String(S.profile.income || '').replace(/\B(?=(\d{3})+(?!\d))/g, ' ')) + '"></label><label class="field"><span>' + esc(t('prof.payday')) + '</span><select id="p-payday" data-ch="payday">' + Array.from({ length: 28 }, (_, i) => '<option value="' + (i + 1) + '" ' + (S.profile.payday === i + 1 ? 'selected' : '') + '>' + (i + 1) + '</option>').join('') + '</select></label></section>' +
       (SERVER() && S.sync ? syncCard() : '') +
-      '<section class="card stack-14"><h2 class="cap small muted">' + esc(t('prof.notif')) + '</h2><div class="row-between"><span id="sw-pay">' + esc(t('prof.nPay')) + '</span>' + sw('pay') + '</div><div class="row-between"><span id="sw-tips">' + esc(t('prof.nTips')) + '</span>' + sw('tips') + '</div><p class="small muted">' + esc(t('prof.notifNote')) + '</p></section>' +
+      (EXT.notifCard ? EXT.notifCard() : '<section class="card stack-14"><h2 class="cap small muted">' + esc(t('prof.notif')) + '</h2><div class="row-between"><span id="sw-pay">' + esc(t('prof.nPay')) + '</span>' + sw('pay') + '</div><div class="row-between"><span id="sw-tips">' + esc(t('prof.nTips')) + '</span>' + sw('tips') + '</div><p class="small muted">' + esc(t('prof.notifNote')) + '</p></section>') +
+      EXT.profileCards.map((f) => f()).join('') +
       '<section class="card stack-10"><h2 class="cap small muted">' + esc(t('prof.data')) + '</h2><a class="li li-link" href="#ops"><span class="grow">' + esc(t('st.allOps')) + '</span>' + icon('chev', 16) + '</a><a class="li li-link" href="#statements"><span class="grow">' + esc(t('st.hist')) + '</span>' + icon('chev', 16) + '</a>' +
       '<details><summary class="li li-link">' + esc(t('prof.rules')) + ' · ' + rules.length + '</summary>' + (rules.length ? '<ul class="list">' + rules.map((k) => '<li class="li"><span class="grow">' + esc(k) + ' → ' + esc(t('cat.' + S.rules[k])) + '</span><button type="button" class="icon-btn icon-btn-sm" data-a="ruleDel" data-v="' + esc(k) + '" aria-label="' + esc(t('prof.ruleDel')) + '">' + icon('trash', 16) + '</button></li>').join('') + '</ul>' : '<p class="small muted">' + esc(t('prof.rulesNone')) + '</p>') + '</details>' +
       '<button type="button" class="li li-link" data-a="clearChat"><span class="grow">' + esc(t('prof.clearChat')) + '</span></button></section>' +
@@ -2481,7 +3559,7 @@ NZ.API_URL = '';
     if (!el) return;
     if (!ui.sheet) { el.innerHTML = ''; document.body.classList.remove('has-sheet'); return; }
     const views = { add: sheetAdd, tx: sheetTx, env: sheetEnv, envAdd: sheetEnvAdd, goal: sheetGoal, goalAdd: sheetGoalAdd, celebrate: sheetCelebrate, news: sheetNews, ios: sheetIos, forgot: sheetForgot, confirm: sheetConfirm };
-    const [title, body] = views[ui.sheet]();
+    const [title, body] = (views[ui.sheet] || EXT.sheets[ui.sheet])();
     el.innerHTML = '<div class="scrim" data-a="closeSheet"></div><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-h"><div class="sheet-head"><h2 id="sheet-h" class="h3">' + esc(title) + '</h2><button type="button" class="icon-btn" data-a="closeSheet" aria-label="' + esc(t('c.close')) + '">' + icon('close') + '</button></div><div class="sheet-body">' + body + '</div></div>';
     document.body.classList.add('has-sheet');
     const f = el.querySelector('[data-autofocus]') || el.querySelector('.sheet button, .sheet input');
@@ -2516,6 +3594,7 @@ NZ.API_URL = '';
       '<div class="row-gap wrap">' + t('add.methods').map((m, i) => '<button type="button" class="chip-btn" data-a="addMethod" data-v="' + i + '" aria-pressed="' + (a.method === i) + '">' + esc(m) + '</button>').join('') + '</div>' +
       '<div class="grid-2"><label class="field"><span>' + esc(t('add.date')) + '</span><input type="date" id="add-date" data-ch="addDate" value="' + a.date + '" max="' + today() + '" min="' + NZ.addDays(today(), -90) + '"></label><label class="field"><span>' + esc(t('add.where')) + '</span><input id="add-where" data-in="addWhere" value="' + esc(a.merchant) + '" placeholder="' + esc(t('add.wherePh')) + '"></label></div>' +
       '<div class="keypad">' + keys.map((k) => '<button type="button" data-a="key" data-v="' + k + '" ' + (k === 'del' ? 'aria-label="' + esc(t('add.erase')) + '"' : '') + '>' + (k === 'del' ? '←' : k) + '</button>').join('') + '</div>' +
+      EXT.addExtras.map((f) => f(a)).join('') +
       '<button type="button" class="btn btn-primary btn-lg" data-a="addSave" ' + (n > 0 ? '' : 'disabled') + '>' + esc(t('c.save')) + '</button>'];
   }
   function addSave() {
@@ -2525,7 +3604,9 @@ NZ.API_URL = '';
     const before = snapshot();
     const amount = a.type === 'exp' ? -n : n;
     const merchant = a.merchant.trim() || t('cat.' + a.cat);
-    S.txs.push({ id: NZ.uid(), date: a.date, amount, raw: merchant, op: 'manual', cat: a.cat, own: false, merchant, confidence: 1, source: 'manual', method: t('add.methods')[a.method] });
+    const tx = { id: NZ.uid(), date: a.date, amount, raw: merchant, op: 'manual', cat: a.cat, own: false, merchant, confidence: 1, source: 'manual', method: t('add.methods')[a.method] };
+    EXT.addApply.forEach((f) => f(tx, a));
+    S.txs.push(tx);
     ui.add = null; ui.sheet = null; S.draft = null;
     NZ.save(S); render();
     toast(t('c.saved'), restore(before));
@@ -2540,6 +3621,7 @@ NZ.API_URL = '';
     return [t('catS.title'), '<div class="li"><span class="grow"><b>' + esc(x.merchant) + '</b><span class="small muted block">' + esc(NZ.fmtDate(x.date) + ' · ' + x.raw) + '</span></span><b>' + M(x.amount, { sign: true }) + '</b></div>' +
       '<div class="cats" role="group">' + cats.map((c) => '<button type="button" class="cat" data-a="setCat" data-v="' + c + '" aria-pressed="' + (x.cat === c) + '"><i style="background:' + NZ.CATS[c].color + '" aria-hidden="true">' + esc(t('cat.' + c)[0]) + '</i><span>' + esc(t('cat.' + c)) + '</span></button>').join('') + '</div>' +
       (x.source !== 'manual' ? '<label class="check"><input type="checkbox" id="tx-always" ' + (ui.sheetData.always === false ? '' : 'checked') + ' data-ch="txAlways"><span>' + esc(t('catS.always', x.merchant)) + '</span></label>' : '') +
+      (EXT.txExtras ? EXT.txExtras(x) : '') +
       '<button type="button" class="btn btn-danger-t" data-a="delTx">' + icon('trash', 18) + esc(t('catS.delTx')) + '</button>'];
   }
 
@@ -2612,6 +3694,7 @@ NZ.API_URL = '';
     return [t('ios.title'), '<ol class="news">' + (Array.isArray(steps) ? steps : []).map((x) => '<li>' + esc(x) + '</li>').join('') + '</ol><p class="small muted">' + esc(t('ios.note')) + '</p><button type="button" class="btn btn-primary btn-lg" data-a="closeSheet" data-autofocus>' + esc(t('news.ok')) + '</button>'];
   }
   function sheetForgot() {
+    if (SERVER() && EXT.sheets.forgotServer) return EXT.sheets.forgotServer();
     if (SERVER()) return [t('auth.forgotTitle'), '<p>' + esc(t('auth.forgotServer')) + '</p>'];
     return [t('auth.forgotTitle'), '<p>' + esc(t('auth.forgotText')) + '</p><button type="button" class="btn btn-danger" data-a="resetAll">' + esc(t('auth.forgotReset')) + '</button>'];
   }
@@ -2762,7 +3845,7 @@ NZ.API_URL = '';
   document.addEventListener('click', (e) => {
     const el = e.target.closest('[data-a]');
     if (!el || el.disabled) return;
-    const fn = A[el.dataset.a];
+    const fn = A[el.dataset.a] || EXT.actions[el.dataset.a];
     if (!fn) return;
     if (el.tagName === 'A' && !['openRecap', 'reviewOps'].includes(el.dataset.a)) e.preventDefault();
     fn(el, e);
@@ -2772,6 +3855,7 @@ NZ.API_URL = '';
     if (!f) return;
     e.preventDefault();
     const k = f.dataset.form;
+    if (EXT.forms[k]) return EXT.forms[k](f);
     if (k === 'auth') return submitAuth(f);
     if (k === 'chat') { const q = f.q.value; f.q.value = ''; return ask(q); }
     if (k === 'delete') {
@@ -2816,6 +3900,7 @@ NZ.API_URL = '';
   document.addEventListener('input', (e) => {
     const k = e.target.dataset && e.target.dataset.in;
     if (!k) return;
+    if (EXT.input[k]) return EXT.input[k](e.target);
     if (k === 'income') {
       const v = parseInt(e.target.value.replace(/\D/g, ''), 10) || 0;
       const est = document.getElementById('o-est');
@@ -2830,6 +3915,7 @@ NZ.API_URL = '';
   document.addEventListener('change', (e) => {
     const k = e.target.dataset && e.target.dataset.ch;
     if (!k) return;
+    if (EXT.change[k]) return EXT.change[k](e.target);
     if (k === 'file') { const f = e.target.files && e.target.files[0]; e.target.value = ''; handleFile(f); }
     if (k === 'income') {
       const before = snapshot();
@@ -2859,7 +3945,9 @@ NZ.API_URL = '';
   // так надёжно и в Android WebView по file://, и в браузере.
 
   NZ.app = {
-    get state() { return S; }, render, ui, A, pullShared,
+    get state() { return S; }, set state(v) { S = v; }, render, ui, A, pullShared,
+    // помощники для money.js / more.js
+    openSheet, closeSheet, renderSheet, toast, snapshot, restore, commit, go, esc, icon, M, t, txRow, SERVER, serverAuthDone,
     onSessionExpired() { ui.authMode = 'in'; ui.authLogin = S.account ? S.account.login : ''; ui.authErr = { form: t('auth.expired') }; render(); }
   };
   if (SERVER() && S.session && S.sync) setTimeout(() => NZ.sync.run(), 300);
@@ -2868,6 +3956,7 @@ NZ.API_URL = '';
   pullPushes(); // уведомления, накопленные пока приложение было закрыто
   pullShared();
   showNewsOnce();
+  if (NZ.moreStart) NZ.moreStart(); // курсы, напоминания, виджет, семья (more.js)
   (function startUpdates() {
     const n = window.NummazaNative;
     if (n) {
@@ -2888,7 +3977,7 @@ NZ.API_URL = '';
     try { seen = localStorage.getItem(KEY); } catch (e) { return; }
     if (seen === NZ.VERSION) return;
     try { localStorage.setItem(KEY, NZ.VERSION); } catch (e) { /* хранилище недоступно */ }
-    if (!S.account || !S.session || !S.profile.onboarded || ui.sheet || navigator.webdriver) return;
+    if (!S.account || !S.session || !S.profile.onboarded || ui.sheet || navigator.webdriver || (EXT.lock && EXT.lock.active())) return;
     setTimeout(() => { if (!ui.sheet) openSheet('news'); }, reducedMotion() ? 0 : 1100);
   }
 })();

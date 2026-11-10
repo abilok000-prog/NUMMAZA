@@ -14,7 +14,7 @@ name: Android APK
 
 on:
   push:
-    branches: [main, feat/analysis-chart-intro]
+    branches: [main, feat/analysis-chart-intro, feat/v1.3]
     paths: ['android/**', 'app/**', 'server/**', '.github/workflows/android.yml']
   workflow_dispatch:
 

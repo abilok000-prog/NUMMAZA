@@ -5,6 +5,10 @@ import { fileURLToPath } from 'node:url';
 import { authRouter } from './routes/auth.js';
 import { syncRouter } from './routes/sync.js';
 import { rateLimit } from './security.js';
+import { createMailer } from './mail.js';
+import { ratesRouter } from './routes/rates.js';
+import { pushRouter } from './routes/push.js';
+import { familyRouter } from './routes/family.js';
 import { buildManifest, readApkVersion } from './bundle.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -34,7 +38,7 @@ export function createApp(db, opts = {}) {
   app.use('/api', (req, res, next) => {
     const origin = req.get('origin');
     if (origin && (allowed.has(origin) || (origin === 'null' && opts.allowFileOrigin !== false))) {
-      res.set({ 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS', 'Access-Control-Max-Age': '600', Vary: 'Origin' });
+      res.set({ 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS', 'Access-Control-Max-Age': '600', Vary: 'Origin' });
     }
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
@@ -54,8 +58,11 @@ export function createApp(db, opts = {}) {
     if (!manifest) manifest = buildManifest(appDir, { minNative: opts.minNative ?? process.env.MIN_NATIVE, apkUrl: opts.apkUrl ?? process.env.APK_URL, apk: opts.apk || readApkVersion(BUILD_SH) });
     res.set('Cache-Control', 'no-cache').json(manifest);
   });
-  app.use('/api', authRouter(db));
+  app.use('/api', authRouter(db, { mailer: opts.mailer || createMailer() }));
   app.use('/api', syncRouter(db));
+  app.use('/api', ratesRouter(opts.ratesSource));
+  app.use('/api', pushRouter(db, opts.pushSender || null));
+  app.use('/api', familyRouter(db));
   app.use('/api', (req, res) => res.status(404).json({ error: 'not_found' }));
 
   // Веб-приложение: адрес API = этот же сайт

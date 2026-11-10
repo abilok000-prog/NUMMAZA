@@ -5,7 +5,11 @@
   const NZ = (window.NZ = window.NZ || {});
 
   // Версия приложения. При выпуске новой версии добавьте в i18n.js запись news.vX_Y (для 1.3 — news.v1_3) — экран «Что нового» покажется один раз.
-  NZ.VERSION = '1.2';
+  NZ.VERSION = '1.3';
+
+  // Точки расширения: новые экраны, листы и действия регистрируются из money.js / more.js,
+  // app.js их подхватывает (маршруты, кнопки data-a, формы data-form, карточки на «Обзоре» и в «Профиле»).
+  NZ.ext = { views: {}, sheets: {}, actions: {}, forms: {}, change: {}, input: {}, homeCards: [], profileCards: [], addExtras: [], addApply: [], onSaved: [], lock: null };
 
   /* ---------- Категории ---------- */
   // color — для диаграмм и полосок (читаются на светлом и тёмном фоне)
@@ -91,6 +95,10 @@
       draft: null,
       dismissed: {},
       demo: false,
+      loans: [],     // рассрочки и кредиты (money.js)
+      accounts: [],  // счета, наличные, депозиты (money.js)
+      lock: null,    // PIN-код и вход по отпечатку — только на этом устройстве, не синхронизируется
+      family: null,  // семейный бюджет: копия с сервера
       sync: null // { cursor, outbox, lastAt, error, clock } — только при входе через сервер
     };
   };
@@ -105,6 +113,7 @@
   };
   NZ.save = function (s) {
     if (NZ.syncTrack) NZ.syncTrack(s); // изменения → очередь синхронизации (sync.js)
+    NZ.ext.onSaved.forEach((f) => { try { f(s); } catch (e) { console.warn('onSaved', e); } });
     try { localStorage.setItem(KEY, JSON.stringify(s)); return true; } catch (e) { return false; }
   };
   NZ.wipe = function () { try { localStorage.removeItem(KEY); } catch (e) { /* хранилище недоступно */ } };
@@ -161,7 +170,9 @@
     const p = NZ.period(today, state.profile.payday);
     const rec = NZ.recurring(state.txs, today);
     const list = [];
+    const hasLoans = (state.loans || []).length > 0;
     rec.forEach((r) => {
+      if (hasLoans && r.cat === 'installments') return; // рассрочки заданы вручную — берём их график
       // Дата платежа в текущем периоде
       const ymNow = NZ.ym(today);
       const candidates = [ymNow, NZ.addMonths(ymNow, 1)].map((ym) => ym + '-' + String(Math.min(r.day, NZ.daysInMonth(ym))).padStart(2, '0'));
@@ -171,6 +182,7 @@
       if (paidThisPeriod && due.slice(0, 7) === NZ.ym(today) && r.last >= p.start) return;
       list.push({ merchant: r.merchant, cat: r.cat, amount: r.perMonth, date: due });
     });
+    if (NZ.loanDuesIn) NZ.loanDuesIn(state, today, p.end).forEach((d) => list.push({ merchant: d.loan.name, cat: 'installments', amount: d.amount, date: d.date, loan: d.loan.id }));
     return list.sort((a, b) => (a.date < b.date ? -1 : 1));
   };
 

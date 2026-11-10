@@ -13,14 +13,30 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
+      # База: строка подключения задаётся в панели Render (Environment) — сейчас это Neon, см. docs/NEON.md.
+      # Бесплатная база Render (nummaza-db ниже) удаляется через 30 дней, поэтому данные перенесены в Neon.
       - key: DATABASE_URL
-        fromDatabase:
-          name: nummaza-db
-          property: connectionString
+        sync: false
+      # Письма с кодом для восстановления пароля (Brevo, см. docs/EMAIL.md)
+      - key: BREVO_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: MAIL_FROM_NAME
+        value: NUMMAZA
+      # Push-напоминания в браузере и на iPhone (см. docs/EMAIL.md)
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        sync: false
       - key: APK_URL   # последний APK для кнопки «Скачать» в приложении (релизы GitHub)
         value: https://github.com/abilok000-prog/NUMMAZA/releases/latest/download/NUMMAZA.apk
       - key: ALLOWED_ORIGINS
         sync: false   # при необходимости: другие сайты через запятую
+# Старая бесплатная база Render: оставлена до переноса данных в Neon (server/scripts/migrate-db.mjs).
+# После переноса и проверки её можно удалить в панели Render.
 databases:
   - name: nummaza-db
     plan: free

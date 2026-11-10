@@ -6,6 +6,7 @@
   const M = (n, o) => NZ.money(n, o);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const today = () => NZ.today();
+  const EXT = NZ.ext;
 
   let S = NZ.load();
   const SERVER = () => !!(NZ.api && NZ.api.enabled());
@@ -79,7 +80,7 @@
 
   /* ---------- Маршруты ---------- */
   const ROUTES = ['home', 'envelopes', 'numa', 'statements', 'goals', 'profile', 'recap', 'delete', 'ops'];
-  function readRoute() { const h = (location.hash || '').replace('#', ''); ui.route = ROUTES.includes(h) ? h : 'home'; }
+  function readRoute() { const h = (location.hash || '').replace('#', ''); ui.route = ROUTES.includes(h) || EXT.views[h] ? h : 'home'; }
   function go(r) { if (location.hash !== '#' + r) location.hash = r; else { ui.route = r; render(); } }
 
   /* ---------- Главный рендер ---------- */
@@ -96,6 +97,7 @@
     const app = document.getElementById('app');
     let html;
     if (!S.account || !S.session) html = viewAuth();
+    else if (EXT.lock && EXT.lock.active()) html = EXT.lock.view();
     else if (!S.profile.onboarded) html = viewOnboarding();
     else if (ui.route === 'recap') html = viewRecap();
     else if (ui.route === 'delete') html = viewDelete();
@@ -155,9 +157,9 @@
   function shell() {
     const tabs = [['home', 'home'], ['envelopes', 'env'], ['numa', 'numa'], ['goals', 'goal'], ['statements', 'upload']];
     const nav = '<nav class="tabbar" aria-label="' + esc(t('c.menu')) + '">' + '<a class="brand" href="#home">' + logo(30) + '<span>nummaza</span></a>' + tabs.map(([r, i]) => '<a href="#' + r + '" ' + (ui.route === r ? 'aria-current="page"' : '') + '>' + icon(i, 22) + '<span>' + esc(t('nav.' + r)) + '</span></a>').join('') + '<a class="side-only" href="#profile" ' + (ui.route === 'profile' ? 'aria-current="page"' : '') + '>' + '<span class="ava ava-sm" aria-hidden="true">' + esc((S.account.name || '?')[0].toUpperCase()) + '</span><span>' + esc(t('nav.profile')) + '</span></a></nav>';
-    const fab = ['home', 'envelopes', 'goals'].includes(ui.route) ? '<button type="button" class="fab" data-a="openAdd" aria-label="' + esc(t('nav.add')) + '">' + icon('plus', 26) + '</button>' : '';
+    const fab = ['home', 'envelopes', 'goals', 'wallet', 'family'].includes(ui.route) ? '<button type="button" class="fab" data-a="openAdd" aria-label="' + esc(t('nav.add')) + '">' + icon('plus', 26) + '</button>' : '';
     const views = { home: viewHome, envelopes: viewEnvelopes, numa: viewNuma, statements: viewStatements, goals: viewGoals, profile: viewProfile, ops: viewOps };
-    return '<div class="layout">' + nav + '<main class="main" id="main">' + views[ui.route]() + '</main>' + fab + '</div>';
+    return '<div class="layout">' + nav + '<main class="main" id="main">' + (views[ui.route] || EXT.views[ui.route])() + '</main>' + fab + '</div>';
   }
 
   /* ================= ВХОД / РЕГИСТРАЦИЯ ================= */
@@ -208,9 +210,13 @@
       else ui.authErr = { form: t('auth.errServer') };
       render(); focusFirstError(); return;
     }
-    // Другой человек на этом устройстве — начинаем с чистого состояния (язык и тема остаются)
-    const sameUser = !!(S.account && S.account.server && S.account.userId === user.id);
+    // Другой человек на этом устройстве — начинаем с чистого состояния (язык и тема остаются).
     // Вход: данные берём с сервера. Регистрация: введённое на устройстве до неё сохраняем и отправляем.
+    return serverAuthDone(mode, user);
+  }
+  // Конец входа через сервер: состояние устройства, синхронизация, переход на «Обзор»
+  async function serverAuthDone(mode, user) {
+    const sameUser = !!(S.account && S.account.server && S.account.userId === user.id);
     const reset = mode === 'in' ? !sameUser : !!(S.account && S.account.server && !sameUser);
     if (reset) {
       const keep = { lang: S.profile.lang || NZ.lang, theme: S.profile.theme };
@@ -218,7 +224,7 @@
       S.profile.lang = keep.lang; S.profile.theme = keep.theme;
     }
     if (!S.profile.lang) S.profile.lang = NZ.lang;
-    S.account = { name: user.name, login: user.login, userId: user.id, server: true };
+    S.account = { name: user.name, login: user.login, userId: user.id, server: true, email: user.email || null };
     S.session = true;
     S.sync = S.sync && sameUser ? S.sync : { cursor: 0, outbox: [], lastAt: 0, error: null, clock: 0 };
     if (mode === 'up') NZ.syncEnqueueAll(S); // профиль и всё введённое до регистрации — на сервер
@@ -365,6 +371,7 @@
     if (S.profile.notif.pay) grid.push('<section class="card" aria-labelledby="up-h"><h2 id="up-h" class="h3">' + esc(t('home.upH')) + '</h2>' + (s.upcomingList.length ? '<ul class="list">' + s.upcomingList.map((u) => '<li class="li"><span class="dot" style="background:' + NZ.CATS[u.cat].color + '"></span><span class="grow"><b>' + esc(u.merchant) + '</b><span class="muted small">' + esc(NZ.fmtDate(u.date)) + ' · ' + esc(t('cat.' + u.cat)) + '</span></span><b>' + M(-u.amount) + '</b></li>').join('') + '</ul>' : '<p class="muted">' + esc(t('home.upNone')) + '</p>') + '</section>');
     const tips = S.profile.notif.tips ? NZ.tips(S, td) : [];
     if (tips.length) grid.push('<section class="span-2" aria-labelledby="tips-h"><h2 id="tips-h" class="h3">' + esc(t('home.tipsH')) + '</h2><div class="tips">' + tips.map(tipCard).join('') + '</div></section>');
+    EXT.homeCards.forEach((f) => { const h = f(s); if (h) grid.push(h); });
     grid.push(goalsStrip());
     if (!noData) grid.push(recentCard());
     parts.push('<div class="home-grid">' + grid.join('') + '</div>');
@@ -777,7 +784,8 @@
       '<section class="card stack-14"><h2 class="cap small muted">' + esc(t('prof.appearance')) + '</h2><div class="field"><span>' + esc(t('c.lang')) + '</span>' + langSwitch().replace('seg-sm', 'seg-full') + '</div><div class="field"><span>' + esc(t('c.theme')) + '</span><div class="seg seg-full" role="group" aria-label="' + esc(t('c.theme')) + '">' + ['light', 'dark', 'system'].map((k) => '<button type="button" data-a="theme" data-v="' + k + '" aria-pressed="' + (S.profile.theme === k) + '">' + esc(t('c.' + k)) + '</button>').join('') + '</div></div></section>' +
       '<section class="card stack-14"><h2 class="cap small muted">' + esc(t('prof.budget')) + '</h2><label class="field"><span>' + esc(t('prof.income')) + '</span><input id="p-income" inputmode="numeric" data-ch="income" value="' + esc(String(S.profile.income || '').replace(/\B(?=(\d{3})+(?!\d))/g, ' ')) + '"></label><label class="field"><span>' + esc(t('prof.payday')) + '</span><select id="p-payday" data-ch="payday">' + Array.from({ length: 28 }, (_, i) => '<option value="' + (i + 1) + '" ' + (S.profile.payday === i + 1 ? 'selected' : '') + '>' + (i + 1) + '</option>').join('') + '</select></label></section>' +
       (SERVER() && S.sync ? syncCard() : '') +
-      '<section class="card stack-14"><h2 class="cap small muted">' + esc(t('prof.notif')) + '</h2><div class="row-between"><span id="sw-pay">' + esc(t('prof.nPay')) + '</span>' + sw('pay') + '</div><div class="row-between"><span id="sw-tips">' + esc(t('prof.nTips')) + '</span>' + sw('tips') + '</div><p class="small muted">' + esc(t('prof.notifNote')) + '</p></section>' +
+      (EXT.notifCard ? EXT.notifCard() : '<section class="card stack-14"><h2 class="cap small muted">' + esc(t('prof.notif')) + '</h2><div class="row-between"><span id="sw-pay">' + esc(t('prof.nPay')) + '</span>' + sw('pay') + '</div><div class="row-between"><span id="sw-tips">' + esc(t('prof.nTips')) + '</span>' + sw('tips') + '</div><p class="small muted">' + esc(t('prof.notifNote')) + '</p></section>') +
+      EXT.profileCards.map((f) => f()).join('') +
       '<section class="card stack-10"><h2 class="cap small muted">' + esc(t('prof.data')) + '</h2><a class="li li-link" href="#ops"><span class="grow">' + esc(t('st.allOps')) + '</span>' + icon('chev', 16) + '</a><a class="li li-link" href="#statements"><span class="grow">' + esc(t('st.hist')) + '</span>' + icon('chev', 16) + '</a>' +
       '<details><summary class="li li-link">' + esc(t('prof.rules')) + ' · ' + rules.length + '</summary>' + (rules.length ? '<ul class="list">' + rules.map((k) => '<li class="li"><span class="grow">' + esc(k) + ' → ' + esc(t('cat.' + S.rules[k])) + '</span><button type="button" class="icon-btn icon-btn-sm" data-a="ruleDel" data-v="' + esc(k) + '" aria-label="' + esc(t('prof.ruleDel')) + '">' + icon('trash', 16) + '</button></li>').join('') + '</ul>' : '<p class="small muted">' + esc(t('prof.rulesNone')) + '</p>') + '</details>' +
       '<button type="button" class="li li-link" data-a="clearChat"><span class="grow">' + esc(t('prof.clearChat')) + '</span></button></section>' +
@@ -843,7 +851,7 @@
     if (!el) return;
     if (!ui.sheet) { el.innerHTML = ''; document.body.classList.remove('has-sheet'); return; }
     const views = { add: sheetAdd, tx: sheetTx, env: sheetEnv, envAdd: sheetEnvAdd, goal: sheetGoal, goalAdd: sheetGoalAdd, celebrate: sheetCelebrate, news: sheetNews, ios: sheetIos, forgot: sheetForgot, confirm: sheetConfirm };
-    const [title, body] = views[ui.sheet]();
+    const [title, body] = (views[ui.sheet] || EXT.sheets[ui.sheet])();
     el.innerHTML = '<div class="scrim" data-a="closeSheet"></div><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-h"><div class="sheet-head"><h2 id="sheet-h" class="h3">' + esc(title) + '</h2><button type="button" class="icon-btn" data-a="closeSheet" aria-label="' + esc(t('c.close')) + '">' + icon('close') + '</button></div><div class="sheet-body">' + body + '</div></div>';
     document.body.classList.add('has-sheet');
     const f = el.querySelector('[data-autofocus]') || el.querySelector('.sheet button, .sheet input');
@@ -878,6 +886,7 @@
       '<div class="row-gap wrap">' + t('add.methods').map((m, i) => '<button type="button" class="chip-btn" data-a="addMethod" data-v="' + i + '" aria-pressed="' + (a.method === i) + '">' + esc(m) + '</button>').join('') + '</div>' +
       '<div class="grid-2"><label class="field"><span>' + esc(t('add.date')) + '</span><input type="date" id="add-date" data-ch="addDate" value="' + a.date + '" max="' + today() + '" min="' + NZ.addDays(today(), -90) + '"></label><label class="field"><span>' + esc(t('add.where')) + '</span><input id="add-where" data-in="addWhere" value="' + esc(a.merchant) + '" placeholder="' + esc(t('add.wherePh')) + '"></label></div>' +
       '<div class="keypad">' + keys.map((k) => '<button type="button" data-a="key" data-v="' + k + '" ' + (k === 'del' ? 'aria-label="' + esc(t('add.erase')) + '"' : '') + '>' + (k === 'del' ? '←' : k) + '</button>').join('') + '</div>' +
+      EXT.addExtras.map((f) => f(a)).join('') +
       '<button type="button" class="btn btn-primary btn-lg" data-a="addSave" ' + (n > 0 ? '' : 'disabled') + '>' + esc(t('c.save')) + '</button>'];
   }
   function addSave() {
@@ -887,7 +896,9 @@
     const before = snapshot();
     const amount = a.type === 'exp' ? -n : n;
     const merchant = a.merchant.trim() || t('cat.' + a.cat);
-    S.txs.push({ id: NZ.uid(), date: a.date, amount, raw: merchant, op: 'manual', cat: a.cat, own: false, merchant, confidence: 1, source: 'manual', method: t('add.methods')[a.method] });
+    const tx = { id: NZ.uid(), date: a.date, amount, raw: merchant, op: 'manual', cat: a.cat, own: false, merchant, confidence: 1, source: 'manual', method: t('add.methods')[a.method] };
+    EXT.addApply.forEach((f) => f(tx, a));
+    S.txs.push(tx);
     ui.add = null; ui.sheet = null; S.draft = null;
     NZ.save(S); render();
     toast(t('c.saved'), restore(before));
@@ -902,6 +913,7 @@
     return [t('catS.title'), '<div class="li"><span class="grow"><b>' + esc(x.merchant) + '</b><span class="small muted block">' + esc(NZ.fmtDate(x.date) + ' · ' + x.raw) + '</span></span><b>' + M(x.amount, { sign: true }) + '</b></div>' +
       '<div class="cats" role="group">' + cats.map((c) => '<button type="button" class="cat" data-a="setCat" data-v="' + c + '" aria-pressed="' + (x.cat === c) + '"><i style="background:' + NZ.CATS[c].color + '" aria-hidden="true">' + esc(t('cat.' + c)[0]) + '</i><span>' + esc(t('cat.' + c)) + '</span></button>').join('') + '</div>' +
       (x.source !== 'manual' ? '<label class="check"><input type="checkbox" id="tx-always" ' + (ui.sheetData.always === false ? '' : 'checked') + ' data-ch="txAlways"><span>' + esc(t('catS.always', x.merchant)) + '</span></label>' : '') +
+      (EXT.txExtras ? EXT.txExtras(x) : '') +
       '<button type="button" class="btn btn-danger-t" data-a="delTx">' + icon('trash', 18) + esc(t('catS.delTx')) + '</button>'];
   }
 
@@ -974,6 +986,7 @@
     return [t('ios.title'), '<ol class="news">' + (Array.isArray(steps) ? steps : []).map((x) => '<li>' + esc(x) + '</li>').join('') + '</ol><p class="small muted">' + esc(t('ios.note')) + '</p><button type="button" class="btn btn-primary btn-lg" data-a="closeSheet" data-autofocus>' + esc(t('news.ok')) + '</button>'];
   }
   function sheetForgot() {
+    if (SERVER() && EXT.sheets.forgotServer) return EXT.sheets.forgotServer();
     if (SERVER()) return [t('auth.forgotTitle'), '<p>' + esc(t('auth.forgotServer')) + '</p>'];
     return [t('auth.forgotTitle'), '<p>' + esc(t('auth.forgotText')) + '</p><button type="button" class="btn btn-danger" data-a="resetAll">' + esc(t('auth.forgotReset')) + '</button>'];
   }
@@ -1124,7 +1137,7 @@
   document.addEventListener('click', (e) => {
     const el = e.target.closest('[data-a]');
     if (!el || el.disabled) return;
-    const fn = A[el.dataset.a];
+    const fn = A[el.dataset.a] || EXT.actions[el.dataset.a];
     if (!fn) return;
     if (el.tagName === 'A' && !['openRecap', 'reviewOps'].includes(el.dataset.a)) e.preventDefault();
     fn(el, e);
@@ -1134,6 +1147,7 @@
     if (!f) return;
     e.preventDefault();
     const k = f.dataset.form;
+    if (EXT.forms[k]) return EXT.forms[k](f);
     if (k === 'auth') return submitAuth(f);
     if (k === 'chat') { const q = f.q.value; f.q.value = ''; return ask(q); }
     if (k === 'delete') {
@@ -1178,6 +1192,7 @@
   document.addEventListener('input', (e) => {
     const k = e.target.dataset && e.target.dataset.in;
     if (!k) return;
+    if (EXT.input[k]) return EXT.input[k](e.target);
     if (k === 'income') {
       const v = parseInt(e.target.value.replace(/\D/g, ''), 10) || 0;
       const est = document.getElementById('o-est');
@@ -1192,6 +1207,7 @@
   document.addEventListener('change', (e) => {
     const k = e.target.dataset && e.target.dataset.ch;
     if (!k) return;
+    if (EXT.change[k]) return EXT.change[k](e.target);
     if (k === 'file') { const f = e.target.files && e.target.files[0]; e.target.value = ''; handleFile(f); }
     if (k === 'income') {
       const before = snapshot();
@@ -1221,7 +1237,9 @@
   // так надёжно и в Android WebView по file://, и в браузере.
 
   NZ.app = {
-    get state() { return S; }, render, ui, A, pullShared,
+    get state() { return S; }, set state(v) { S = v; }, render, ui, A, pullShared,
+    // помощники для money.js / more.js
+    openSheet, closeSheet, renderSheet, toast, snapshot, restore, commit, go, esc, icon, M, t, txRow, SERVER, serverAuthDone,
     onSessionExpired() { ui.authMode = 'in'; ui.authLogin = S.account ? S.account.login : ''; ui.authErr = { form: t('auth.expired') }; render(); }
   };
   if (SERVER() && S.session && S.sync) setTimeout(() => NZ.sync.run(), 300);
@@ -1230,6 +1248,7 @@
   pullPushes(); // уведомления, накопленные пока приложение было закрыто
   pullShared();
   showNewsOnce();
+  if (NZ.moreStart) NZ.moreStart(); // курсы, напоминания, виджет, семья (more.js)
   (function startUpdates() {
     const n = window.NummazaNative;
     if (n) {
@@ -1250,7 +1269,7 @@
     try { seen = localStorage.getItem(KEY); } catch (e) { return; }
     if (seen === NZ.VERSION) return;
     try { localStorage.setItem(KEY, NZ.VERSION); } catch (e) { /* хранилище недоступно */ }
-    if (!S.account || !S.session || !S.profile.onboarded || ui.sheet || navigator.webdriver) return;
+    if (!S.account || !S.session || !S.profile.onboarded || ui.sheet || navigator.webdriver || (EXT.lock && EXT.lock.active())) return;
     setTimeout(() => { if (!ui.sheet) openSheet('news'); }, reducedMotion() ? 0 : 1100);
   }
 })();

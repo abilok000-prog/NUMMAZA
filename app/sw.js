@@ -64,6 +64,22 @@ async function cacheFirst(req) {
   return r;
 }
 
+// Push-напоминания с сервера (сколько можно потратить, завтра платёж)
+self.addEventListener('push', (e) => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (err) { d = { title: 'NUMMAZA', body: e.data ? e.data.text() : '' }; }
+  e.waitUntil(self.registration.showNotification(d.title || 'NUMMAZA', { body: d.body || '', tag: d.tag, icon: BASE + 'icons/icon-192.png', badge: BASE + 'icons/favicon-32.png' }));
+});
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  e.waitUntil((async () => {
+    const list = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const open = list.find((c) => c.url.startsWith(BASE));
+    if (open) return open.focus();
+    return self.clients.openWindow(BASE);
+  })());
+});
+
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
