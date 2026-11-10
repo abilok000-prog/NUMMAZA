@@ -10,6 +10,7 @@ import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -31,10 +32,25 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> fileCallback;
     /** Файл, полученный через «Поделиться», ждёт, пока JavaScript его заберёт (JSON или null). */
     private volatile String sharedJson;
+    /** Обновления веб-части по воздуху (см. WebUpdater) */
+    private WebUpdater updater;
+    private final Runnable notifyUpdate = new Runnable() {
+        @Override
+        public void run() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (web != null) web.evaluateJavascript("window.NZ && NZ.onUpdateReady && NZ.onUpdateReady()", null);
+                }
+            });
+        }
+    };
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        updater = new WebUpdater(this);
+        updater.prepare();
         web = new WebView(this);
         web.setBackgroundColor(0xFFF4F5F7);
 
@@ -55,6 +71,12 @@ public class MainActivity extends Activity {
                     return true;
                 }
                 return false;
+            }
+
+            // Файлы обновления вместо встроенных (адрес страницы тот же — данные в localStorage не теряются)
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                return updater.intercept(request.getUrl().toString());
             }
         });
 
@@ -84,6 +106,7 @@ public class MainActivity extends Activity {
             receive(getIntent());
             web.loadUrl("file:///android_asset/www/index.html");
         }
+        updater.checkAsync(true, notifyUpdate);
     }
 
     /** Приложение уже открыто, а пользователь снова поделился файлом. */
@@ -137,7 +160,7 @@ public class MainActivity extends Activity {
         return name == null || name.isEmpty() ? "statement.pdf" : name;
     }
 
-    private static String json(String s) {
+    static String json(String s) {
         StringBuilder b = new StringBuilder("\"");
         for (int i = 0; i < s.length(); i++) {
             char ch = s.charAt(i);
@@ -177,6 +200,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (web != null) web.evaluateJavascript("window.NZ && NZ.onNativeResume && NZ.onNativeResume()", null);
+        if (updater != null) updater.checkAsync(false, notifyUpdate);
     }
 
     /** Мост для JavaScript: window.NummazaNative.share(text), takeSharedFile(), уведомления банков */
@@ -203,6 +227,33 @@ public class MainActivity extends Activity {
         public String pullNotifications() {
             try { return BankInbox.pull(MainActivity.this); } catch (Exception e) { return "[]"; }
         }
+
+        /** Версия нативной части (для веб-кода: какие возможности есть в этом APK) */
+        @JavascriptInterface
+        public int nativeVersion() { return WebUpdater.NATIVE; }
+
+        /** Веб-приложение успешно запустилось — обновление рабочее, откат не нужен */
+        @JavascriptInterface
+        public void bundleOk() { updater.confirm(); }
+
+        /** Скачано обновление веб-части, ждёт перезапуска */
+        @JavascriptInterface
+        public boolean updateReady() { return updater.hasPending(); }
+
+        /** Применить скачанное обновление и перезагрузить страницу */
+        @JavascriptInterface
+        public void applyUpdate() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (updater.applyPending() && web != null) web.reload();
+                }
+            });
+        }
+
+        /** Новая версия APK, если вышла: {"name","url"} или пустая строка */
+        @JavascriptInterface
+        public String apkUpdate() { return updater.apkUpdate(); }
 
         /** Отдаёт полученный через «Поделиться» файл один раз: {name, type, data: base64} или {error}. */
         @JavascriptInterface

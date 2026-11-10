@@ -6,3 +6,4 @@ node_modules/
 server/node_modules/
 server/data/
 .env
+android/SIGNING-*.txt

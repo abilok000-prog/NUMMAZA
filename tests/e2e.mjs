@@ -295,6 +295,22 @@ ok(await page.evaluate(() => ['kk', 'en'].every((l) => { const p = window.NZ.lan
 await page.locator('.sheet [data-a="closeSheet"].btn').click();
 ok(await page.locator('.news').count() === 0, '«Понятно» закрывает лист');
 
+console.log('\n18. Обновления: новая веб-версия и новый APK (мост Android подменён)');
+await page.evaluate(() => {
+  window.NummazaNative.apkUpdate = () => JSON.stringify({ name: '1.3', url: 'https://example.com/NUMMAZA.apk' });
+  window.NummazaNative.applyUpdate = () => { window.__applied = true; };
+  location.hash = 'home';
+});
+await page.waitForSelector('.banner-teal a[href="https://example.com/NUMMAZA.apk"]');
+ok((await text()).includes('Вышло приложение 1.3 для Android'), 'на «Обзоре» — баннер о новом APK со ссылкой');
+await page.locator('[data-a="dismiss"][data-v="apk:1.3"]').click();
+ok(await page.locator('a[href="https://example.com/NUMMAZA.apk"]').count() === 0, 'баннер APK можно закрыть');
+await page.evaluate(() => window.NZ.onUpdateReady());
+await page.waitForSelector('[data-a="applyUpdate"]');
+ok((await text()).includes('Доступна новая версия NUMMAZA'), 'скачано обновление — баннер «Обновить»');
+await page.locator('[data-a="applyUpdate"]').click();
+ok(await page.evaluate(() => window.__applied === true), '«Обновить» применяет обновление через Android');
+
 const missing = await page.evaluate(() => window.NZ.missing);
 ok(missing.length === 0, 'нет непереведённых строк' + (missing.length ? ': ' + missing.join(', ') : ''));
 ok(errors.length === 0, 'нет ошибок в консоли' + (errors.length ? ':\n    ' + errors.join('\n    ') : ''));

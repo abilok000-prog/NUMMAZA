@@ -337,6 +337,7 @@
     const name = S.account.name;
     const parts = [];
     parts.push('<header class="page-head"><div><p class="muted">' + esc(t('home.hello', name)) + '</p><h1 class="h2">' + esc(NZ.fmtDate(td, true)) + '</h1></div><div class="row-gap">' + themeBtn() + '<a class="ava" href="#profile" aria-label="' + esc(t('nav.profile')) + '">' + esc(name[0].toUpperCase()) + '</a></div></header>');
+    parts.push(updateBanner());
     if (S.demo) parts.push('<div class="banner"><span>' + esc(t('home.demo')) + '</span><button type="button" class="link" data-a="rmDemo">' + esc(t('home.demoRm')) + '</button></div>');
     const prevYm = NZ.addMonths(NZ.ym(td), -1);
     const ms = NZ.monthStats(S, prevYm);
@@ -579,6 +580,36 @@
     NZ.save(S); render();
     toast(t('push.added', t('c.ops', added.length), added[added.length - 1].bank || 'Kaspi'), restore(before));
     return added.length;
+  }
+  /* ---------- Обновления ----------
+     Android: нативная часть сама скачивает новую веб-версию с сервера и сообщает NZ.onUpdateReady();
+     «Обновить» применяет её без переустановки APK. Новая версия APK (нужна только при изменении нативной части)
+     приходит ссылкой на скачивание. Сайт: раз в 10 минут и при возврате на вкладку сверяем id версии с сервером. */
+  function apkInfo() {
+    const n = window.NummazaNative;
+    if (!n || !n.apkUpdate) return null;
+    try { const j = n.apkUpdate(); return j ? JSON.parse(j) : null; } catch (e) { return null; }
+  }
+  function updateBanner() {
+    if (ui.update === 'ready') return '<div class="banner banner-teal" role="status"><span>' + esc(t('upd.ready')) + '</span><button type="button" class="btn btn-sm btn-on-teal" data-a="applyUpdate">' + esc(t('upd.apply')) + '</button></div>';
+    const apk = apkInfo();
+    if (apk && apk.url && !S.dismissed['apk:' + apk.name]) return '<div class="banner banner-teal"><span>' + esc(t('upd.apk', apk.name)) + '</span><span class="row-gap"><a class="btn btn-sm btn-on-teal" href="' + esc(apk.url) + '" target="_blank" rel="noopener">' + esc(t('upd.apkGet')) + '</a><button type="button" class="icon-btn icon-btn-sm" data-a="dismiss" data-v="' + esc('apk:' + apk.name) + '" aria-label="' + esc(t('c.close')) + '">' + icon('close', 16) + '</button></span></div>';
+    return '';
+  }
+  NZ.onUpdateReady = () => {
+    if (ui.update === 'ready') return;
+    ui.update = 'ready';
+    if (ui.route === 'home') render();
+    toast(t('upd.ready'));
+  };
+  let bootBundle = null;
+  function webUpdateCheck() {
+    if (window.NummazaNative || !SERVER() || NZ.API_URL !== location.origin || document.hidden) return;
+    fetch(NZ.API_URL + '/api/bundle', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((m) => {
+      if (!m || !m.id) return;
+      if (!bootBundle) bootBundle = m.id;
+      else if (m.id !== bootBundle) NZ.onUpdateReady();
+    }).catch(() => { /* нет сети — проверим позже */ });
   }
   NZ.onNativeResume = () => { pullPushes(); if (ui.route === 'statements') render(); };
   setInterval(() => { if (!document.hidden) pullPushes(); }, 30000);
@@ -945,6 +976,7 @@
     calMove(el) { const base = ui.calYm || NZ.ym(today()); const nx = NZ.addMonths(base, +el.dataset.v); if (nx <= NZ.ym(today())) { ui.calYm = nx; ui.selDay = null; render(); } },
     day(el) { ui.selDay = el.dataset.v; render(); const b = document.querySelector('[data-a="day"][data-v="' + el.dataset.v + '"]'); if (b) b.focus(); },
     dismiss(el) { S.dismissed[el.dataset.v] = 1; commit(); },
+    applyUpdate() { const n = window.NummazaNative; if (n && n.applyUpdate) n.applyUpdate(); else location.reload(); },
     openRecap(el) { ui.recapYm = el.dataset.v; ui.recapIdx = 0; },
     rmDemo() {
       const before = snapshot();
@@ -1174,6 +1206,16 @@
   pullPushes(); // уведомления, накопленные пока приложение было закрыто
   pullShared();
   showNewsOnce();
+  (function startUpdates() {
+    const n = window.NummazaNative;
+    if (n) {
+      try { if (n.bundleOk) n.bundleOk(); } catch (e) { /* старый APK */ }
+      try { if (n.updateReady && n.updateReady()) ui.update = 'ready'; } catch (e) { /* старый APK */ }
+    }
+    webUpdateCheck();
+    setInterval(webUpdateCheck, 10 * 60000);
+    document.addEventListener('visibilitychange', webUpdateCheck);
+  })();
 
   // После обновления версии «Что нового» показывается один раз. Новым пользователям не показываем:
   // для них всё и так новое — просто запоминаем текущую версию.

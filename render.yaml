@@ -16,6 +16,8 @@ services:
         fromDatabase:
           name: nummaza-db
           property: connectionString
+      - key: APK_URL   # последний APK для кнопки «Скачать» в приложении (релизы GitHub)
+        value: https://github.com/abilok000-prog/NUMMAZA/releases/latest/download/NUMMAZA.apk
       - key: ALLOWED_ORIGINS
         sync: false   # при необходимости: другие сайты через запятую
 databases:
