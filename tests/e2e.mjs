@@ -283,6 +283,18 @@ await page.evaluate(() => {
 });
 ok(await page.evaluate(() => window.__pushLeft) === 2, 'строка выписки заменяет такую же операцию из уведомления');
 
+console.log('\n17. Версия 1.2 и «Что нового»');
+await page.evaluate(() => { location.hash = 'profile'; });
+await page.waitForSelector('[data-a="news"]');
+ok((await text()).includes('NUMMAZA 1.2'), 'в профиле версия 1.2');
+await page.locator('[data-a="news"]').click();
+await page.waitForSelector('.news li');
+ok(await page.locator('#sheet-h').innerText() === 'Что нового', 'открылся лист «Что нового»');
+ok(await page.locator('.news li').count() === 5, 'в списке 5 изменений версии 1.2');
+ok(await page.evaluate(() => ['kk', 'en'].every((l) => { const p = window.NZ.lang; window.NZ.lang = l; const r = window.NZ.t('news.v1_2'); window.NZ.lang = p; return Array.isArray(r) && r.length === 5; })), 'список изменений переведён на казахский и английский');
+await page.locator('.sheet [data-a="closeSheet"].btn').click();
+ok(await page.locator('.news').count() === 0, '«Понятно» закрывает лист');
+
 const missing = await page.evaluate(() => window.NZ.missing);
 ok(missing.length === 0, 'нет непереведённых строк' + (missing.length ? ': ' + missing.join(', ') : ''));
 ok(errors.length === 0, 'нет ошибок в консоли' + (errors.length ? ':\n    ' + errors.join('\n    ') : ''));

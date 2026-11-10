@@ -10,8 +10,8 @@ ROOT=$(pwd)
 T=$ROOT/tools
 B=$ROOT/build
 OUT=${1:-$ROOT/../dist/NUMMAZA.apk}
-VERSION_CODE=${VERSION_CODE:-2}
-VERSION_NAME=${VERSION_NAME:-1.1}
+VERSION_CODE=${VERSION_CODE:-3}
+VERSION_NAME=${VERSION_NAME:-1.2}
 MAVEN=https://repo1.maven.org/maven2
 
 mkdir -p "$T"

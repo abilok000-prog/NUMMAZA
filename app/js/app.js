@@ -731,7 +731,7 @@
       '<section class="card stack-10"><h2 class="cap small muted">' + esc(t('prof.data')) + '</h2><a class="li li-link" href="#ops"><span class="grow">' + esc(t('st.allOps')) + '</span>' + icon('chev', 16) + '</a><a class="li li-link" href="#statements"><span class="grow">' + esc(t('st.hist')) + '</span>' + icon('chev', 16) + '</a>' +
       '<details><summary class="li li-link">' + esc(t('prof.rules')) + ' · ' + rules.length + '</summary>' + (rules.length ? '<ul class="list">' + rules.map((k) => '<li class="li"><span class="grow">' + esc(k) + ' → ' + esc(t('cat.' + S.rules[k])) + '</span><button type="button" class="icon-btn icon-btn-sm" data-a="ruleDel" data-v="' + esc(k) + '" aria-label="' + esc(t('prof.ruleDel')) + '">' + icon('trash', 16) + '</button></li>').join('') + '</ul>' : '<p class="small muted">' + esc(t('prof.rulesNone')) + '</p>') + '</details>' +
       '<button type="button" class="li li-link" data-a="clearChat"><span class="grow">' + esc(t('prof.clearChat')) + '</span></button></section>' +
-      '<button type="button" class="btn btn-lg btn-danger-t" data-a="logout">' + esc(t('prof.logout')) + '</button><a class="link center" href="#delete">' + esc(t('prof.delAcc')) + '</a><p class="small muted center">' + esc(t('prof.version')) + '</p>';
+      '<button type="button" class="btn btn-lg btn-danger-t" data-a="logout">' + esc(t('prof.logout')) + '</button><a class="link center" href="#delete">' + esc(t('prof.delAcc')) + '</a><button type="button" class="link center" data-a="news">' + esc(t('news.link') + ' ' + NZ.VERSION) + '</button><p class="small muted center">' + esc(t('prof.version')) + '</p>';
   }
   function syncCard() {
     const sy = S.sync;
@@ -792,7 +792,7 @@
     const el = document.getElementById('sheet');
     if (!el) return;
     if (!ui.sheet) { el.innerHTML = ''; document.body.classList.remove('has-sheet'); return; }
-    const views = { add: sheetAdd, tx: sheetTx, env: sheetEnv, envAdd: sheetEnvAdd, goal: sheetGoal, goalAdd: sheetGoalAdd, celebrate: sheetCelebrate, forgot: sheetForgot, confirm: sheetConfirm };
+    const views = { add: sheetAdd, tx: sheetTx, env: sheetEnv, envAdd: sheetEnvAdd, goal: sheetGoal, goalAdd: sheetGoalAdd, celebrate: sheetCelebrate, news: sheetNews, forgot: sheetForgot, confirm: sheetConfirm };
     const [title, body] = views[ui.sheet]();
     el.innerHTML = '<div class="scrim" data-a="closeSheet"></div><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-h"><div class="sheet-head"><h2 id="sheet-h" class="h3">' + esc(title) + '</h2><button type="button" class="icon-btn" data-a="closeSheet" aria-label="' + esc(t('c.close')) + '">' + icon('close') + '</button></div><div class="sheet-body">' + body + '</div></div>';
     document.body.classList.add('has-sheet');
@@ -913,6 +913,12 @@
     const g = S.goals.find((x) => x.id === ui.sheetData.id);
     return [t('goal.celebT'), '<div class="celebrate"><div class="jar jar-xl" aria-hidden="true"><i style="height:100%"></i></div><p class="h3 center">' + esc(t('goal.celebS', g.name, M(g.saved))) + '</p><button type="button" class="btn btn-primary btn-lg" data-a="goalNew">' + esc(t('goal.celebNew')) + '</button></div>'];
   }
+  // «Что нового»: список изменений текущей версии из i18n (news.v1_2 для версии 1.2)
+  function sheetNews() {
+    const items = t('news.v' + NZ.VERSION.split('.').join('_'));
+    const list = Array.isArray(items) ? items : [];
+    return [t('news.title'), '<p class="small muted">' + esc(t('news.ver', NZ.VERSION)) + '</p><ul class="news">' + list.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul><button type="button" class="btn btn-primary btn-lg" data-a="closeSheet" data-autofocus>' + esc(t('news.ok')) + '</button>'];
+  }
   function sheetForgot() {
     if (SERVER()) return [t('auth.forgotTitle'), '<p>' + esc(t('auth.forgotServer')) + '</p>'];
     return [t('auth.forgotTitle'), '<p>' + esc(t('auth.forgotText')) + '</p><button type="button" class="btn btn-danger" data-a="resetAll">' + esc(t('auth.forgotReset')) + '</button>'];
@@ -1013,6 +1019,7 @@
       openSheet('confirm', { title: imp.name, text: t('st.rmConfirm', t('c.ops', imp.count)), yes: t('st.rm'), fn: () => { S.txs = S.txs.filter((x) => x.importId !== imp.id); S.imports = S.imports.filter((i) => i.id !== imp.id); if (!S.imports.length) S.demo = false; ui.importResult = null; NZ.save(S); toast(t('st.rmDone')); } });
     },
     confirmYes() { const fn = ui.sheetData.fn; ui.sheet = null; if (fn) fn(); render(); },
+    news() { openSheet('news'); },
     goalNew() { ui.sheet = null; openSheet('goal', {}); goalCalcHint(); },
     goalEdit(el) { openSheet('goal', { id: el.dataset.v }); },
     goalAdd(el) { openSheet('goalAdd', { id: el.dataset.v }); },
@@ -1166,4 +1173,17 @@
   render();
   pullPushes(); // уведомления, накопленные пока приложение было закрыто
   pullShared();
+  showNewsOnce();
+
+  // После обновления версии «Что нового» показывается один раз. Новым пользователям не показываем:
+  // для них всё и так новое — просто запоминаем текущую версию.
+  function showNewsOnce() {
+    const KEY = 'nummaza.seenVersion';
+    let seen = null;
+    try { seen = localStorage.getItem(KEY); } catch (e) { return; }
+    if (seen === NZ.VERSION) return;
+    try { localStorage.setItem(KEY, NZ.VERSION); } catch (e) { /* хранилище недоступно */ }
+    if (!S.account || !S.session || !S.profile.onboarded || ui.sheet || navigator.webdriver) return;
+    setTimeout(() => { if (!ui.sheet) openSheet('news'); }, reducedMotion() ? 0 : 1100);
+  }
 })();
