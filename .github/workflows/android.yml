@@ -52,8 +52,19 @@ jobs:
           KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
         run: |
           if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ]; then
-            echo "$KS_B64" | base64 -d > android/nummaza-release.p12
-            echo "KEYSTORE_PASS=$KS_PASS" >> "$GITHUB_ENV"
+            # Пробелы и переносы строк при вставке не мешают
+            PASS=$(printf '%s' "$KS_PASS" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            B64=$(printf '%s' "$KS_B64" | tr -d ' \r\n\t')
+            echo "::notice::Секреты найдены: ключ ${#B64} символов base64, пароль ${#PASS} символов"
+            if ! printf '%s' "$B64" | base64 -d > android/nummaza-release.p12 2>/dev/null; then
+              echo "::error::ANDROID_KEYSTORE_B64 — не base64. Вставьте всё содержимое файла android/SIGNING-KEY-BASE64.txt (одна длинная строка), без других слов."
+              exit 1
+            fi
+            if ! keytool -list -storetype PKCS12 -keystore android/nummaza-release.p12 -storepass "$PASS" >/dev/null 2>&1; then
+              echo "::error::Ключ раскодирован, но пароль ANDROID_KEYSTORE_PASS к нему не подходит (или ключ вставлен не целиком). Пароль — строка после «Значение:» в android/SIGNING-SECRETS.txt."
+              exit 1
+            fi
+            echo "KEYSTORE_PASS=$PASS" >> "$GITHUB_ENV"
             echo "signed=yes" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::Нет секретов ANDROID_KEYSTORE_B64 / ANDROID_KEYSTORE_PASS — APK подписан временным ключом и не будет опубликован в релиз."
