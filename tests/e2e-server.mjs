@@ -164,6 +164,40 @@ await D.sync();
 ok(await D.state(() => window.NZ.app.state.txs.length) === 88, 'PDF разобран: 88 операций');
 ok(await count("SELECT count(*)::int AS n FROM records r JOIN users u ON u.id=r.user_id WHERE u.login='pdf@test.kz' AND r.kind='tx'") === 88, 'и все 88 на сервере');
 
+console.log('11. iPhone: подсказка «На экран Домой» и работа без интернета');
+{
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'ru-RU', hasTouch: true, isMobile: true,
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1' });
+  await ctx.addInitScript(() => { window.NZ = { _fakeToday: '2026-11-04' }; });
+  const page = await ctx.newPage();
+  page.on('pageerror', (e) => errors.push('iPhone pageerror: ' + e.message));
+  await page.goto(base);
+  await page.fill('#a-name', 'Тест'); await page.fill('#a-login', 'ios@test.kz'); await page.fill('#a-pw', PW); await page.check('#a-agree');
+  await page.getByRole('button', { name: 'Создать аккаунт' }).click();
+  for (let i = 0; i < 3; i++) { await page.waitForSelector('[data-a="onbNext"]'); if (i === 1) await page.fill('#o-income', '500000'); await page.locator('[data-a="onbNext"]').click(); }
+  await page.getByRole('button', { name: 'Попробовать на примере' }).click();
+  await page.waitForSelector('.safe-v');
+  ok(await page.locator('[data-a="iosHow"]').isVisible(), 'на iPhone в Safari видна подсказка об установке');
+  await page.locator('[data-a="iosHow"]').click();
+  const sheet = await page.locator('#sheet').innerText();
+  ok(sheet.includes('На экран Домой') && sheet.includes('Apple не даёт'), 'инструкция: «Поделиться» → «На экран Домой», и честно про уведомления банка');
+  await page.getByRole('button', { name: 'Понятно' }).click();
+  await page.waitForSelector('#sheet .scrim', { state: 'detached' });
+  await page.locator('[data-a="dismiss"][data-v="ios-install"]').click();
+  ok(await page.locator('[data-a="iosHow"]').count() === 0, 'подсказку можно закрыть');
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await page.reload(); await page.waitForSelector('.safe-v');
+  ok(await page.evaluate(() => !!navigator.serviceWorker.controller), 'service worker управляет страницей');
+  ok(await page.evaluate(async () => (await (await caches.open('nummaza-files')).keys()).length > 15), 'файлы приложения сохранены на телефоне');
+  await ctx.setOffline(true);
+  await page.reload(); await page.waitForSelector('.safe-v', { timeout: 15000 });
+  ok((await page.locator('#app').innerText()).includes('Сегодня можно потратить'), 'без интернета приложение открывается с данными');
+  await ctx.setOffline(false);
+  await ctx.close();
+  // Android Chrome / обычный компьютер — подсказки для iPhone нет
+  ok(!(await D.page.locator('[data-a="iosHow"]').count()), 'не на iPhone подсказки нет');
+}
+
 ok(errors.length === 0, 'нет ошибок в консоли' + (errors.length ? ':\n    ' + errors.join('\n    ') : ''));
 await browser.close();
 server.close();

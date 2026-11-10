@@ -164,6 +164,23 @@ test('веб-приложение раздаётся с адресом API = э�
   assert.equal(html.headers.get('cache-control'), 'no-cache', 'страница всегда проверяется — обновление приходит сразу');
 });
 
+test('установка на экран «Домой»: манифест, иконки, service worker', async () => {
+  const m = await fetch(base + '/manifest.webmanifest');
+  assert.equal(m.status, 200);
+  assert.match(m.headers.get('content-type'), /manifest\+json|json/);
+  const man = await m.json();
+  assert.equal(man.display, 'standalone');
+  for (const ic of man.icons) assert.equal((await fetch(base + '/' + ic.src)).status, 200, ic.src);
+  assert.equal((await fetch(base + '/icons/apple-touch-icon.png')).status, 200);
+  const sw = await fetch(base + '/sw.js');
+  assert.equal(sw.status, 200);
+  assert.match(sw.headers.get('content-type'), /javascript/);
+  assert.equal(sw.headers.get('cache-control'), 'no-cache', 'новый service worker подхватывается сразу');
+  const html = await (await fetch(base + '/')).text();
+  assert.match(html, /rel="manifest"/);
+  assert.match(html, /rel="apple-touch-icon"/);
+});
+
 test('обновления по воздуху: описание веб-версии', async () => {
   const r = await fetch(base + '/api/bundle');
   assert.equal(r.status, 200);

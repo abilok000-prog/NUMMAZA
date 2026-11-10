@@ -337,7 +337,7 @@
     const name = S.account.name;
     const parts = [];
     parts.push('<header class="page-head"><div><p class="muted">' + esc(t('home.hello', name)) + '</p><h1 class="h2">' + esc(NZ.fmtDate(td, true)) + '</h1></div><div class="row-gap">' + themeBtn() + '<a class="ava" href="#profile" aria-label="' + esc(t('nav.profile')) + '">' + esc(name[0].toUpperCase()) + '</a></div></header>');
-    parts.push(updateBanner());
+    parts.push(updateBanner() || iosBanner());
     if (S.demo) parts.push('<div class="banner"><span>' + esc(t('home.demo')) + '</span><button type="button" class="link" data-a="rmDemo">' + esc(t('home.demoRm')) + '</button></div>');
     const prevYm = NZ.addMonths(NZ.ym(td), -1);
     const ms = NZ.monthStats(S, prevYm);
@@ -596,6 +596,25 @@
     if (apk && apk.url && !S.dismissed['apk:' + apk.name]) return '<div class="banner banner-teal"><span>' + esc(t('upd.apk', apk.name)) + '</span><span class="row-gap"><a class="btn btn-sm btn-on-teal" href="' + esc(apk.url) + '" target="_blank" rel="noopener">' + esc(t('upd.apkGet')) + '</a><button type="button" class="icon-btn icon-btn-sm" data-a="dismiss" data-v="' + esc('apk:' + apk.name) + '" aria-label="' + esc(t('c.close')) + '">' + icon('close', 16) + '</button></span></div>';
     return '';
   }
+  /* ---------- iPhone: установка на экран «Домой» ----------
+     Сайт — это и есть приложение для iPhone: Safari → «Поделиться» → «На экран Домой».
+     Подсказку показываем только в браузере на iPhone/iPad, пока приложение не установлено. */
+  function isIos() {
+    const ua = navigator.userAgent || '';
+    return /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  }
+  function isStandalone() {
+    return navigator.standalone === true || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+  }
+  function iosBanner() {
+    if (window.NummazaNative || !/^https?:$/.test(location.protocol) || !isIos() || isStandalone() || S.dismissed['ios-install']) return '';
+    return '<div class="banner banner-teal"><span>' + esc(t('ios.banner')) + '</span><span class="row-gap"><button type="button" class="btn btn-sm btn-on-teal" data-a="iosHow">' + esc(t('ios.how')) + '</button><button type="button" class="icon-btn icon-btn-sm" data-a="dismiss" data-v="ios-install" aria-label="' + esc(t('c.close')) + '">' + icon('close', 16) + '</button></span></div>';
+  }
+  // Работа без интернета: service worker только на нашем сайте (не в APK с file:// и не в однофайловой сборке)
+  function registerSw() {
+    if (window.NummazaNative || !('serviceWorker' in navigator) || !SERVER() || NZ.API_URL !== location.origin) return;
+    navigator.serviceWorker.register('sw.js').catch(() => { /* не страшно: просто без офлайна */ });
+  }
   NZ.onUpdateReady = () => {
     if (ui.update === 'ready') return;
     ui.update = 'ready';
@@ -823,7 +842,7 @@
     const el = document.getElementById('sheet');
     if (!el) return;
     if (!ui.sheet) { el.innerHTML = ''; document.body.classList.remove('has-sheet'); return; }
-    const views = { add: sheetAdd, tx: sheetTx, env: sheetEnv, envAdd: sheetEnvAdd, goal: sheetGoal, goalAdd: sheetGoalAdd, celebrate: sheetCelebrate, news: sheetNews, forgot: sheetForgot, confirm: sheetConfirm };
+    const views = { add: sheetAdd, tx: sheetTx, env: sheetEnv, envAdd: sheetEnvAdd, goal: sheetGoal, goalAdd: sheetGoalAdd, celebrate: sheetCelebrate, news: sheetNews, ios: sheetIos, forgot: sheetForgot, confirm: sheetConfirm };
     const [title, body] = views[ui.sheet]();
     el.innerHTML = '<div class="scrim" data-a="closeSheet"></div><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-h"><div class="sheet-head"><h2 id="sheet-h" class="h3">' + esc(title) + '</h2><button type="button" class="icon-btn" data-a="closeSheet" aria-label="' + esc(t('c.close')) + '">' + icon('close') + '</button></div><div class="sheet-body">' + body + '</div></div>';
     document.body.classList.add('has-sheet');
@@ -950,6 +969,10 @@
     const list = Array.isArray(items) ? items : [];
     return [t('news.title'), '<p class="small muted">' + esc(t('news.ver', NZ.VERSION)) + '</p><ul class="news">' + list.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul><button type="button" class="btn btn-primary btn-lg" data-a="closeSheet" data-autofocus>' + esc(t('news.ok')) + '</button>'];
   }
+  function sheetIos() {
+    const steps = t('ios.steps');
+    return [t('ios.title'), '<ol class="news">' + (Array.isArray(steps) ? steps : []).map((x) => '<li>' + esc(x) + '</li>').join('') + '</ol><p class="small muted">' + esc(t('ios.note')) + '</p><button type="button" class="btn btn-primary btn-lg" data-a="closeSheet" data-autofocus>' + esc(t('news.ok')) + '</button>'];
+  }
   function sheetForgot() {
     if (SERVER()) return [t('auth.forgotTitle'), '<p>' + esc(t('auth.forgotServer')) + '</p>'];
     return [t('auth.forgotTitle'), '<p>' + esc(t('auth.forgotText')) + '</p><button type="button" class="btn btn-danger" data-a="resetAll">' + esc(t('auth.forgotReset')) + '</button>'];
@@ -1052,6 +1075,7 @@
     },
     confirmYes() { const fn = ui.sheetData.fn; ui.sheet = null; if (fn) fn(); render(); },
     news() { openSheet('news'); },
+    iosHow() { openSheet('ios'); },
     goalNew() { ui.sheet = null; openSheet('goal', {}); goalCalcHint(); },
     goalEdit(el) { openSheet('goal', { id: el.dataset.v }); },
     goalAdd(el) { openSheet('goalAdd', { id: el.dataset.v }); },
@@ -1212,6 +1236,7 @@
       try { if (n.bundleOk) n.bundleOk(); } catch (e) { /* старый APK */ }
       try { if (n.updateReady && n.updateReady()) ui.update = 'ready'; } catch (e) { /* старый APK */ }
     }
+    registerSw();
     webUpdateCheck();
     setInterval(webUpdateCheck, 10 * 60000);
     document.addEventListener('visibilitychange', webUpdateCheck);
