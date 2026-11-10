@@ -210,6 +210,41 @@
     };
   };
 
+  /* ---------- Анализ периода: план против факта ---------- */
+  // План = доход минус накопления, равномерно на весь период.
+  // Факт = накопленные траты по дням. Прогноз = нынешний темп до конца периода.
+  // Категории: этот период против прошлого за то же число дней.
+  NZ.analysis = function (state, today) {
+    const p = NZ.period(today, state.profile.payday);
+    const income = state.profile.income || 0;
+    const savings = NZ.sum(state.goals.filter((g) => g.saved < g.target), (g) => g.monthly || 0);
+    const budget = Math.max(0, income - savings);
+    const elapsed = Math.min(p.days, NZ.daysBetween(p.start, today) + 1); // дней прошло, включая сегодня
+    const byDay = {};
+    NZ.spendIn(state.txs, p.start, NZ.addDays(today, 1)).forEach((t) => { byDay[t.date] = (byDay[t.date] || 0) - t.amount; });
+    const actual = [];
+    let cum = 0;
+    for (let i = 0; i < elapsed; i++) { cum += byDay[NZ.addDays(p.start, i)] || 0; actual.push(cum); }
+    const spent = cum;
+    const planToday = budget * (elapsed / p.days);
+    const forecast = elapsed ? (spent / elapsed) * p.days : 0;
+    const prevStart = NZ.addDays(p.start, -p.days);
+    const cur = NZ.byCat(NZ.spendIn(state.txs, p.start, NZ.addDays(today, 1)));
+    const prev = NZ.byCat(NZ.spendIn(state.txs, prevStart, NZ.addDays(prevStart, elapsed)));
+    const hasPrev = state.txs.some((t) => NZ.isSpend(t) && t.date < p.start && t.date >= prevStart);
+    const cats = Object.keys(cur).map((c) => ({ cat: c, sum: cur[c], prev: prev[c] || 0, change: hasPrev && prev[c] ? Math.round((cur[c] / prev[c] - 1) * 100) : null }))
+      .sort((a, b) => b.sum - a.sum);
+    const top = cats.slice(0, 5);
+    const rest = cats.slice(5);
+    if (rest.length) top.push({ cat: 'rest', sum: NZ.sum(rest, (x) => x.sum), prev: NZ.sum(rest, (x) => x.prev), change: null, n: rest.length });
+    return {
+      period: p, budget, income, savings, elapsed, actual, spent, planToday, forecast,
+      diffToday: spent - planToday,           // > 0 — тратим быстрее плана
+      forecastLeft: budget - forecast,        // < 0 — к зарплате будет перерасход
+      cats: top, prevTotal: hasPrev ? NZ.sum(Object.values(prev)) : null
+    };
+  };
+
   /* ---------- Конверты ---------- */
   NZ.suggestLimits = function (state, today) {
     const from = NZ.addMonths(NZ.ym(today), -2) + '-01';
