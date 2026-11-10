@@ -5,15 +5,19 @@ import { fileURLToPath } from 'node:url';
 import { authRouter } from './routes/auth.js';
 import { syncRouter } from './routes/sync.js';
 import { rateLimit } from './security.js';
+import { buildManifest, readApkVersion } from './bundle.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const APP_DIR = process.env.APP_DIR || path.resolve(here, '..', 'app');
+const BUILD_SH = path.resolve(here, '..', 'android', 'build.sh');
 
 /**
  * @param {*} db  — из openDb()
- * @param {{ allowedOrigins?: string[], allowFileOrigin?: boolean, serveApp?: boolean, authLimit?: number }} opts
+ * @param {{ allowedOrigins?: string[], allowFileOrigin?: boolean, serveApp?: boolean, authLimit?: number,
+ *           appDir?: string, apkUrl?: string, apk?: { versionCode: number, versionName: string }, minNative?: number }} opts
  */
 export function createApp(db, opts = {}) {
+  const appDir = opts.appDir || APP_DIR; // одна папка и для раздачи, и для описания версии
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1); // за прокси Render / Caddy, чтобы req.ip был адресом клиента
@@ -44,6 +48,12 @@ export function createApp(db, opts = {}) {
     await db.query('SELECT 1');
     res.json({ ok: true });
   });
+  // Обновления «по воздуху»: описание текущей веб-версии (считается один раз — файлы не меняются, пока сервер работает)
+  let manifest = null;
+  app.get('/api/bundle', (req, res) => {
+    if (!manifest) manifest = buildManifest(appDir, { minNative: opts.minNative ?? process.env.MIN_NATIVE, apkUrl: opts.apkUrl ?? process.env.APK_URL, apk: opts.apk || readApkVersion(BUILD_SH) });
+    res.set('Cache-Control', 'no-cache').json(manifest);
+  });
   app.use('/api', authRouter(db));
   app.use('/api', syncRouter(db));
   app.use('/api', (req, res) => res.status(404).json({ error: 'not_found' }));
@@ -57,7 +67,13 @@ export function createApp(db, opts = {}) {
       res.set('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
       next();
     });
-    app.use(express.static(APP_DIR, { maxAge: '1h' }));
+    // Код и страница — всегда с проверкой (ETag → 304), чтобы обновление приходило сразу после деплоя.
+    // Тяжёлые и неизменные pdf.js и шрифты — из кэша на неделю.
+    app.use(express.static(appDir, {
+      setHeaders(res, file) {
+        res.set('Cache-Control', /[\\/](vendor|fonts)[\\/]/.test(file) ? 'public, max-age=604800' : 'no-cache');
+      }
+    }));
   }
 
   // Ошибки: в ответ — без подробностей, в лог — полностью

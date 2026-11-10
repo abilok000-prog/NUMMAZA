@@ -161,4 +161,22 @@ test('веб-приложение раздаётся с адресом API = э�
   assert.match(html.headers.get('content-security-policy'), /default-src 'self'/);
   const cfg = await (await fetch(base + '/js/config.js')).text();
   assert.match(cfg, /API_URL = location\.origin/);
+  assert.equal(html.headers.get('cache-control'), 'no-cache', 'страница всегда проверяется — обновление приходит сразу');
+});
+
+test('обновления по воздуху: описание веб-версии', async () => {
+  const r = await fetch(base + '/api/bundle');
+  assert.equal(r.status, 200);
+  const m = await r.json();
+  assert.match(m.id, /^[0-9a-f]{16}$/);
+  assert.match(m.version, /^\d+\.\d+/);
+  const paths = m.files.map((f) => f.p);
+  assert.ok(paths.includes('index.html') && paths.includes('js/app.js'));
+  assert.ok(!paths.includes('js/config.js'), 'config.js не входит: в APK свой адрес сервера');
+  const core = m.files.find((f) => f.p === 'js/core.js');
+  const buf = Buffer.from(await (await fetch(base + '/js/core.js')).arrayBuffer());
+  const { createHash } = await import('node:crypto');
+  assert.equal(createHash('sha256').update(buf).digest('hex'), core.h, 'хеш совпадает с тем, что отдаёт сервер');
+  assert.equal(core.s, buf.length);
+  assert.equal((await (await fetch(base + '/api/bundle')).json()).id, m.id, 'id стабилен между запросами');
 });

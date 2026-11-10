@@ -1,0 +1,98 @@
+# Сборка Android-приложения на серверах GitHub (Linux) — WSL и Android Studio не нужны.
+# После каждого push: проверка обновлений по воздуху → сборка APK → файл во вкладке Actions
+# и в релизе vX.Y (ссылка …/releases/latest/download/NUMMAZA.apk ведёт на самый новый).
+#
+# Подпись: один и тот же ключ для всех сборок, иначе новый APK не встанет поверх старого.
+# Settings → Secrets and variables → Actions → New repository secret:
+#   ANDROID_KEYSTORE_B64   — файл nummaza-release.p12 в base64
+#   ANDROID_KEYSTORE_PASS  — пароль от него
+# Шаг «Ключ подписи» пишет в отчёт длину вставленных значений и что именно не так (сами значения не видны).
+# Без секретов APK собирается с временным ключом и в релиз не публикуется.
+# Кнопка «Run workflow» во вкладке Actions появляется, только когда этот файл есть в ветке по умолчанию (main);
+# до слияния с main сборку запускает push в ветку.
+name: Android APK
+
+on:
+  push:
+    branches: [main, feat/analysis-chart-intro]
+    paths: ['android/**', 'app/**', 'server/**', '.github/workflows/android.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Зависимости сервера (для проверки обновлений)
+        run: cd server && npm ci
+
+      - name: Проверка обновлений по воздуху
+        run: bash android/test/run.sh
+
+      - name: Ключ подписи
+        id: key
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+        run: |
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ]; then
+            # Пробелы и переносы строк при вставке не мешают
+            PASS=$(printf '%s' "$KS_PASS" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            B64=$(printf '%s' "$KS_B64" | tr -d ' \r\n\t')
+            echo "::notice::Секреты найдены: ключ ${#B64} символов base64, пароль ${#PASS} символов"
+            if ! printf '%s' "$B64" | base64 -d > android/nummaza-release.p12 2>/dev/null; then
+              echo "::error::ANDROID_KEYSTORE_B64 — не base64. Вставьте всё содержимое файла android/SIGNING-KEY-BASE64.txt (одна длинная строка), без других слов."
+              exit 1
+            fi
+            if ! keytool -list -storetype PKCS12 -keystore android/nummaza-release.p12 -storepass "$PASS" >/dev/null 2>&1; then
+              echo "::error::Ключ раскодирован, но пароль ANDROID_KEYSTORE_PASS к нему не подходит (или ключ вставлен не целиком). Пароль — строка после «Значение:» в android/SIGNING-SECRETS.txt."
+              exit 1
+            fi
+            echo "KEYSTORE_PASS=$PASS" >> "$GITHUB_ENV"
+            echo "signed=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Нет секретов ANDROID_KEYSTORE_B64 / ANDROID_KEYSTORE_PASS — APK подписан временным ключом и не будет опубликован в релиз."
+            echo "signed=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Сборка APK
+        env:
+          NUMMAZA_API_URL: https://nummaza.onrender.com
+        run: bash android/build.sh "$PWD/dist/NUMMAZA.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NUMMAZA-apk
+          path: dist/NUMMAZA.apk
+          retention-days: 30
+
+      - name: Релиз
+        if: github.event_name == 'push' && steps.key.outputs.signed == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=$(grep -o 'VERSION_NAME:-[0-9.]*' android/build.sh | cut -d- -f2)
+          TAG="v$V"
+          NOTES=$(awk -v v="## $V" 'index($0, v) == 1 {on=1; next} /^## / {on=0} on' CHANGELOG.md)
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "NUMMAZA $V" --notes "${NOTES:-NUMMAZA $V}" --latest
+          fi
+          gh release upload "$TAG" dist/NUMMAZA.apk --clobber
+          echo "APK: https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/NUMMAZA.apk"

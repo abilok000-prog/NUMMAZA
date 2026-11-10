@@ -5,4 +5,6 @@ public abstract class Context {
     public SharedPreferences getSharedPreferences(String name, int mode) { throw new RuntimeException("stub"); }
     public ContentResolver getContentResolver() { throw new RuntimeException("stub"); }
     public String getPackageName() { throw new RuntimeException("stub"); }
+    public java.io.File getFilesDir() { throw new RuntimeException("stub"); }
+    public android.content.res.AssetManager getAssets() { throw new RuntimeException("stub"); }
 }

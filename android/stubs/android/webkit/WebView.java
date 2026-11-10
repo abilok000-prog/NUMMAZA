@@ -13,6 +13,7 @@ public class WebView extends View {
     public void evaluateJavascript(String script, ValueCallback<String> resultCallback) { throw new RuntimeException("stub"); }
     public boolean canGoBack() { throw new RuntimeException("stub"); }
     public void goBack() { throw new RuntimeException("stub"); }
+    public void reload() { throw new RuntimeException("stub"); }
     public WebBackForwardList saveState(Bundle outState) { throw new RuntimeException("stub"); }
     public WebBackForwardList restoreState(Bundle inState) { throw new RuntimeException("stub"); }
 }

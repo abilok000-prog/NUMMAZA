@@ -283,6 +283,34 @@ await page.evaluate(() => {
 });
 ok(await page.evaluate(() => window.__pushLeft) === 2, 'строка выписки заменяет такую же операцию из уведомления');
 
+console.log('\n17. Версия 1.2 и «Что нового»');
+await page.evaluate(() => { location.hash = 'profile'; });
+await page.waitForSelector('[data-a="news"]');
+ok((await text()).includes('NUMMAZA 1.2'), 'в профиле версия 1.2');
+await page.locator('[data-a="news"]').click();
+await page.waitForSelector('.news li');
+ok(await page.locator('#sheet-h').innerText() === 'Что нового', 'открылся лист «Что нового»');
+ok(await page.locator('.news li').count() === 5, 'в списке 5 изменений версии 1.2');
+ok(await page.evaluate(() => ['kk', 'en'].every((l) => { const p = window.NZ.lang; window.NZ.lang = l; const r = window.NZ.t('news.v1_2'); window.NZ.lang = p; return Array.isArray(r) && r.length === 5; })), 'список изменений переведён на казахский и английский');
+await page.locator('.sheet [data-a="closeSheet"].btn').click();
+ok(await page.locator('.news').count() === 0, '«Понятно» закрывает лист');
+
+console.log('\n18. Обновления: новая веб-версия и новый APK (мост Android подменён)');
+await page.evaluate(() => {
+  window.NummazaNative.apkUpdate = () => JSON.stringify({ name: '1.3', url: 'https://example.com/NUMMAZA.apk' });
+  window.NummazaNative.applyUpdate = () => { window.__applied = true; };
+  location.hash = 'home';
+});
+await page.waitForSelector('.banner-teal a[href="https://example.com/NUMMAZA.apk"]');
+ok((await text()).includes('Вышло приложение 1.3 для Android'), 'на «Обзоре» — баннер о новом APK со ссылкой');
+await page.locator('[data-a="dismiss"][data-v="apk:1.3"]').click();
+ok(await page.locator('a[href="https://example.com/NUMMAZA.apk"]').count() === 0, 'баннер APK можно закрыть');
+await page.evaluate(() => window.NZ.onUpdateReady());
+await page.waitForSelector('[data-a="applyUpdate"]');
+ok((await text()).includes('Доступна новая версия NUMMAZA'), 'скачано обновление — баннер «Обновить»');
+await page.locator('[data-a="applyUpdate"]').click();
+ok(await page.evaluate(() => window.__applied === true), '«Обновить» применяет обновление через Android');
+
 const missing = await page.evaluate(() => window.NZ.missing);
 ok(missing.length === 0, 'нет непереведённых строк' + (missing.length ? ': ' + missing.join(', ') : ''));
 ok(errors.length === 0, 'нет ошибок в консоли' + (errors.length ? ':\n    ' + errors.join('\n    ') : ''));

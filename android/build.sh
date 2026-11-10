@@ -10,8 +10,8 @@ ROOT=$(pwd)
 T=$ROOT/tools
 B=$ROOT/build
 OUT=${1:-$ROOT/../dist/NUMMAZA.apk}
-VERSION_CODE=${VERSION_CODE:-2}
-VERSION_NAME=${VERSION_NAME:-1.1}
+VERSION_CODE=${VERSION_CODE:-3}
+VERSION_NAME=${VERSION_NAME:-1.2}
 MAVEN=https://repo1.maven.org/maven2
 
 mkdir -p "$T"
@@ -37,6 +37,15 @@ if [ -n "$API_URL" ]; then
 else
   echo "   сервер не задан — локальный режим (задайте NUMMAZA_API_URL)"
 fi
+# sha256 встроенных файлов: обновление по воздуху скачивает только те, что изменились (см. WebUpdater)
+python3 - "$B/assets/www" > "$B/assets/www-hashes.txt" <<'PY'
+import hashlib, os, sys
+root = sys.argv[1]
+for d, _, files in sorted(os.walk(root)):
+    for f in sorted(files):
+        p = os.path.join(d, f)
+        print(os.path.relpath(p, root).replace(os.sep, '/'), hashlib.sha256(open(p, 'rb').read()).hexdigest())
+PY
 
 echo "2/6 Ресурсы (aapt2 compile + link)"
 "$T/aapt2" compile --dir "$ROOT/res" -o "$B/res.zip"
@@ -46,7 +55,9 @@ echo "2/6 Ресурсы (aapt2 compile + link)"
 
 echo "3/6 Java → class (заглушки Android API только для компиляции)"
 javac -nowarn -source 8 -target 8 -d "$B/stubs" $(find "$ROOT/stubs" -name '*.java') 2>&1 | grep -v 'warning: \[options\]' || true
-javac -nowarn -source 8 -target 8 -cp "$B/stubs" -d "$B/classes" $(find "$ROOT/src" -name '*.java') 2>&1 | grep -v 'warning: \[options\]' || true
+mkdir -p "$B/gen/kz/nummaza/app"
+printf 'package kz.nummaza.app;\n/** Создаётся android/build.sh. */\nfinal class BuildInfo {\n    static final int VERSION_CODE = %s;\n    static final String VERSION_NAME = "%s";\n}\n' "$VERSION_CODE" "$VERSION_NAME" > "$B/gen/kz/nummaza/app/BuildInfo.java"
+javac -nowarn -source 8 -target 8 -cp "$B/stubs" -d "$B/classes" $(find "$ROOT/src" "$B/gen" -name '*.java') 2>&1 | grep -v 'warning: \[options\]' || true
 test -f "$B/classes/kz/nummaza/app/MainActivity.class"
 
 echo "4/6 class → classes.dex"

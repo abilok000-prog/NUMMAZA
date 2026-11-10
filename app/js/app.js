@@ -337,6 +337,7 @@
     const name = S.account.name;
     const parts = [];
     parts.push('<header class="page-head"><div><p class="muted">' + esc(t('home.hello', name)) + '</p><h1 class="h2">' + esc(NZ.fmtDate(td, true)) + '</h1></div><div class="row-gap">' + themeBtn() + '<a class="ava" href="#profile" aria-label="' + esc(t('nav.profile')) + '">' + esc(name[0].toUpperCase()) + '</a></div></header>');
+    parts.push(updateBanner());
     if (S.demo) parts.push('<div class="banner"><span>' + esc(t('home.demo')) + '</span><button type="button" class="link" data-a="rmDemo">' + esc(t('home.demoRm')) + '</button></div>');
     const prevYm = NZ.addMonths(NZ.ym(td), -1);
     const ms = NZ.monthStats(S, prevYm);
@@ -580,6 +581,36 @@
     toast(t('push.added', t('c.ops', added.length), added[added.length - 1].bank || 'Kaspi'), restore(before));
     return added.length;
   }
+  /* ---------- Обновления ----------
+     Android: нативная часть сама скачивает новую веб-версию с сервера и сообщает NZ.onUpdateReady();
+     «Обновить» применяет её без переустановки APK. Новая версия APK (нужна только при изменении нативной части)
+     приходит ссылкой на скачивание. Сайт: раз в 10 минут и при возврате на вкладку сверяем id версии с сервером. */
+  function apkInfo() {
+    const n = window.NummazaNative;
+    if (!n || !n.apkUpdate) return null;
+    try { const j = n.apkUpdate(); return j ? JSON.parse(j) : null; } catch (e) { return null; }
+  }
+  function updateBanner() {
+    if (ui.update === 'ready') return '<div class="banner banner-teal" role="status"><span>' + esc(t('upd.ready')) + '</span><button type="button" class="btn btn-sm btn-on-teal" data-a="applyUpdate">' + esc(t('upd.apply')) + '</button></div>';
+    const apk = apkInfo();
+    if (apk && apk.url && !S.dismissed['apk:' + apk.name]) return '<div class="banner banner-teal"><span>' + esc(t('upd.apk', apk.name)) + '</span><span class="row-gap"><a class="btn btn-sm btn-on-teal" href="' + esc(apk.url) + '" target="_blank" rel="noopener">' + esc(t('upd.apkGet')) + '</a><button type="button" class="icon-btn icon-btn-sm" data-a="dismiss" data-v="' + esc('apk:' + apk.name) + '" aria-label="' + esc(t('c.close')) + '">' + icon('close', 16) + '</button></span></div>';
+    return '';
+  }
+  NZ.onUpdateReady = () => {
+    if (ui.update === 'ready') return;
+    ui.update = 'ready';
+    if (ui.route === 'home') render();
+    toast(t('upd.ready'));
+  };
+  let bootBundle = null;
+  function webUpdateCheck() {
+    if (window.NummazaNative || !SERVER() || NZ.API_URL !== location.origin || document.hidden) return;
+    fetch(NZ.API_URL + '/api/bundle', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((m) => {
+      if (!m || !m.id) return;
+      if (!bootBundle) bootBundle = m.id;
+      else if (m.id !== bootBundle) NZ.onUpdateReady();
+    }).catch(() => { /* нет сети — проверим позже */ });
+  }
   NZ.onNativeResume = () => { pullPushes(); if (ui.route === 'statements') render(); };
   setInterval(() => { if (!document.hidden) pullPushes(); }, 30000);
 
@@ -731,7 +762,7 @@
       '<section class="card stack-10"><h2 class="cap small muted">' + esc(t('prof.data')) + '</h2><a class="li li-link" href="#ops"><span class="grow">' + esc(t('st.allOps')) + '</span>' + icon('chev', 16) + '</a><a class="li li-link" href="#statements"><span class="grow">' + esc(t('st.hist')) + '</span>' + icon('chev', 16) + '</a>' +
       '<details><summary class="li li-link">' + esc(t('prof.rules')) + ' · ' + rules.length + '</summary>' + (rules.length ? '<ul class="list">' + rules.map((k) => '<li class="li"><span class="grow">' + esc(k) + ' → ' + esc(t('cat.' + S.rules[k])) + '</span><button type="button" class="icon-btn icon-btn-sm" data-a="ruleDel" data-v="' + esc(k) + '" aria-label="' + esc(t('prof.ruleDel')) + '">' + icon('trash', 16) + '</button></li>').join('') + '</ul>' : '<p class="small muted">' + esc(t('prof.rulesNone')) + '</p>') + '</details>' +
       '<button type="button" class="li li-link" data-a="clearChat"><span class="grow">' + esc(t('prof.clearChat')) + '</span></button></section>' +
-      '<button type="button" class="btn btn-lg btn-danger-t" data-a="logout">' + esc(t('prof.logout')) + '</button><a class="link center" href="#delete">' + esc(t('prof.delAcc')) + '</a><p class="small muted center">' + esc(t('prof.version')) + '</p>';
+      '<button type="button" class="btn btn-lg btn-danger-t" data-a="logout">' + esc(t('prof.logout')) + '</button><a class="link center" href="#delete">' + esc(t('prof.delAcc')) + '</a><button type="button" class="link center" data-a="news">' + esc(t('news.link') + ' ' + NZ.VERSION) + '</button><p class="small muted center">' + esc(t('prof.version')) + '</p>';
   }
   function syncCard() {
     const sy = S.sync;
@@ -792,7 +823,7 @@
     const el = document.getElementById('sheet');
     if (!el) return;
     if (!ui.sheet) { el.innerHTML = ''; document.body.classList.remove('has-sheet'); return; }
-    const views = { add: sheetAdd, tx: sheetTx, env: sheetEnv, envAdd: sheetEnvAdd, goal: sheetGoal, goalAdd: sheetGoalAdd, celebrate: sheetCelebrate, forgot: sheetForgot, confirm: sheetConfirm };
+    const views = { add: sheetAdd, tx: sheetTx, env: sheetEnv, envAdd: sheetEnvAdd, goal: sheetGoal, goalAdd: sheetGoalAdd, celebrate: sheetCelebrate, news: sheetNews, forgot: sheetForgot, confirm: sheetConfirm };
     const [title, body] = views[ui.sheet]();
     el.innerHTML = '<div class="scrim" data-a="closeSheet"></div><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-h"><div class="sheet-head"><h2 id="sheet-h" class="h3">' + esc(title) + '</h2><button type="button" class="icon-btn" data-a="closeSheet" aria-label="' + esc(t('c.close')) + '">' + icon('close') + '</button></div><div class="sheet-body">' + body + '</div></div>';
     document.body.classList.add('has-sheet');
@@ -913,6 +944,12 @@
     const g = S.goals.find((x) => x.id === ui.sheetData.id);
     return [t('goal.celebT'), '<div class="celebrate"><div class="jar jar-xl" aria-hidden="true"><i style="height:100%"></i></div><p class="h3 center">' + esc(t('goal.celebS', g.name, M(g.saved))) + '</p><button type="button" class="btn btn-primary btn-lg" data-a="goalNew">' + esc(t('goal.celebNew')) + '</button></div>'];
   }
+  // «Что нового»: список изменений текущей версии из i18n (news.v1_2 для версии 1.2)
+  function sheetNews() {
+    const items = t('news.v' + NZ.VERSION.split('.').join('_'));
+    const list = Array.isArray(items) ? items : [];
+    return [t('news.title'), '<p class="small muted">' + esc(t('news.ver', NZ.VERSION)) + '</p><ul class="news">' + list.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul><button type="button" class="btn btn-primary btn-lg" data-a="closeSheet" data-autofocus>' + esc(t('news.ok')) + '</button>'];
+  }
   function sheetForgot() {
     if (SERVER()) return [t('auth.forgotTitle'), '<p>' + esc(t('auth.forgotServer')) + '</p>'];
     return [t('auth.forgotTitle'), '<p>' + esc(t('auth.forgotText')) + '</p><button type="button" class="btn btn-danger" data-a="resetAll">' + esc(t('auth.forgotReset')) + '</button>'];
@@ -939,6 +976,7 @@
     calMove(el) { const base = ui.calYm || NZ.ym(today()); const nx = NZ.addMonths(base, +el.dataset.v); if (nx <= NZ.ym(today())) { ui.calYm = nx; ui.selDay = null; render(); } },
     day(el) { ui.selDay = el.dataset.v; render(); const b = document.querySelector('[data-a="day"][data-v="' + el.dataset.v + '"]'); if (b) b.focus(); },
     dismiss(el) { S.dismissed[el.dataset.v] = 1; commit(); },
+    applyUpdate() { const n = window.NummazaNative; if (n && n.applyUpdate) n.applyUpdate(); else location.reload(); },
     openRecap(el) { ui.recapYm = el.dataset.v; ui.recapIdx = 0; },
     rmDemo() {
       const before = snapshot();
@@ -1013,6 +1051,7 @@
       openSheet('confirm', { title: imp.name, text: t('st.rmConfirm', t('c.ops', imp.count)), yes: t('st.rm'), fn: () => { S.txs = S.txs.filter((x) => x.importId !== imp.id); S.imports = S.imports.filter((i) => i.id !== imp.id); if (!S.imports.length) S.demo = false; ui.importResult = null; NZ.save(S); toast(t('st.rmDone')); } });
     },
     confirmYes() { const fn = ui.sheetData.fn; ui.sheet = null; if (fn) fn(); render(); },
+    news() { openSheet('news'); },
     goalNew() { ui.sheet = null; openSheet('goal', {}); goalCalcHint(); },
     goalEdit(el) { openSheet('goal', { id: el.dataset.v }); },
     goalAdd(el) { openSheet('goalAdd', { id: el.dataset.v }); },
@@ -1166,4 +1205,27 @@
   render();
   pullPushes(); // уведомления, накопленные пока приложение было закрыто
   pullShared();
+  showNewsOnce();
+  (function startUpdates() {
+    const n = window.NummazaNative;
+    if (n) {
+      try { if (n.bundleOk) n.bundleOk(); } catch (e) { /* старый APK */ }
+      try { if (n.updateReady && n.updateReady()) ui.update = 'ready'; } catch (e) { /* старый APK */ }
+    }
+    webUpdateCheck();
+    setInterval(webUpdateCheck, 10 * 60000);
+    document.addEventListener('visibilitychange', webUpdateCheck);
+  })();
+
+  // После обновления версии «Что нового» показывается один раз. Новым пользователям не показываем:
+  // для них всё и так новое — просто запоминаем текущую версию.
+  function showNewsOnce() {
+    const KEY = 'nummaza.seenVersion';
+    let seen = null;
+    try { seen = localStorage.getItem(KEY); } catch (e) { return; }
+    if (seen === NZ.VERSION) return;
+    try { localStorage.setItem(KEY, NZ.VERSION); } catch (e) { /* хранилище недоступно */ }
+    if (!S.account || !S.session || !S.profile.onboarded || ui.sheet || navigator.webdriver) return;
+    setTimeout(() => { if (!ui.sheet) openSheet('news'); }, reducedMotion() ? 0 : 1100);
+  }
 })();
