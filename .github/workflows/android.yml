@@ -7,6 +7,8 @@
 #   ANDROID_KEYSTORE_B64   — файл nummaza-release.p12 в base64
 #   ANDROID_KEYSTORE_PASS  — пароль от него
 # Без секретов APK собирается с временным ключом и в релиз не публикуется.
+# Кнопка «Run workflow» во вкладке Actions появляется, только когда этот файл есть в ветке по умолчанию (main);
+# до слияния с main сборку запускает push в ветку.
 name: Android APK
 
 on:
