@@ -103,6 +103,51 @@
     renderSheet();
     renderToast();
     if (ui.route === 'numa') { const log = document.getElementById('chatlog'); if (log) log.scrollTop = log.scrollHeight; }
+    if (!ui.animOnce && S.account && S.session && S.profile.onboarded && ui.route === 'home') { ui.animOnce = true; introAnim(); }
+  }
+
+  /* ---------- Заставка и анимация входа ---------- */
+  // Заставка при открытии приложения: рисуется логотип, затем экран плавно растворяется.
+  // Первый показ «Обзора»: карточки поднимаются по очереди, сумма «Сегодня можно» считается от нуля,
+  // график плана прорисовывается слева направо. При «уменьшить движение» в системе — без анимации.
+  // Автотесты (navigator.webdriver) тоже без анимации: иначе сумма читается посреди отсчёта
+  const reducedMotion = () => !!(navigator.webdriver || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches));
+  let introDelay = 0;
+  (function splash() {
+    if (reducedMotion() || NZ._noSplash) return;
+    const el = document.createElement('div');
+    el.id = 'splash';
+    el.setAttribute('aria-hidden', 'true');
+    el.innerHTML = '<svg class="sp-logo" viewBox="0 0 36 36"><rect width="36" height="36" rx="10" fill="#fff" fill-opacity=".14"></rect><path pathLength="1" d="M10 26V10l16 16V10" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"></path></svg><span class="sp-name">nummaza</span>';
+    document.body.appendChild(el);
+    introDelay = 950;
+    setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 450); introDelay = 0; }, introDelay);
+  })();
+
+  function introAnim() {
+    const main = document.getElementById('main');
+    if (!main || reducedMotion()) return;
+    const delay = introDelay;
+    main.style.setProperty('--intro', delay + 'ms');
+    const items = [];
+    Array.from(main.children).forEach((c) => { if (c.classList.contains('home-grid')) items.push(...c.children); else items.push(c); });
+    items.forEach((c, i) => { c.style.setProperty('--k', Math.min(i, 8)); c.classList.add('rise'); });
+    const v = main.querySelector('.safe-v');
+    const target = v ? +v.getAttribute('data-count') : 0;
+    if (!v || !target) return;
+    v.textContent = M(0);
+    const dur = 900;
+    setTimeout(() => {
+      const t0 = performance.now();
+      const step = (now) => {
+        if (!v.isConnected) return;
+        const k = Math.min(1, (now - t0) / dur);
+        const e = 1 - Math.pow(1 - k, 3);
+        v.textContent = M(k < 1 ? Math.round((target * e) / 10) * 10 : target);
+        if (k < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    }, delay + 150);
   }
 
   function shell() {
@@ -311,6 +356,7 @@
     }
 
     const grid = [];
+    if (!noData) grid.push(analysisCard());
     if (!noData) grid.push(calendarCard(s));
     if (S.profile.notif.pay) grid.push('<section class="card" aria-labelledby="up-h"><h2 id="up-h" class="h3">' + esc(t('home.upH')) + '</h2>' + (s.upcomingList.length ? '<ul class="list">' + s.upcomingList.map((u) => '<li class="li"><span class="dot" style="background:' + NZ.CATS[u.cat].color + '"></span><span class="grow"><b>' + esc(u.merchant) + '</b><span class="muted small">' + esc(NZ.fmtDate(u.date)) + ' · ' + esc(t('cat.' + u.cat)) + '</span></span><b>' + M(-u.amount) + '</b></li>').join('') + '</ul>' : '<p class="muted">' + esc(t('home.upNone')) + '</p>') + '</section>');
     const tips = S.profile.notif.tips ? NZ.tips(S, td) : [];
@@ -321,6 +367,57 @@
     return parts.join('');
   }
   const frow = (a, b) => '<div><dt>' + esc(a) + '</dt><dd>' + esc(b) + '</dd></div>';
+
+  // Анализ периода: линия плана, накопленные траты, прогноз до зарплаты + категории к прошлому периоду
+  function analysisCard() {
+    const a = NZ.analysis(S, today());
+    const p = a.period;
+    const W = 300; const H = 100;
+    const maxY = Math.max(1, a.budget, a.forecast, a.spent) * 1.06;
+    const X = (i) => (i / p.days) * W;
+    const Y = (v) => H - (v / maxY) * H;
+    const f = (n) => n.toFixed(1);
+    const pts = a.actual.map((v, i) => f(X(i + 1)) + ',' + f(Y(v)));
+    const line = 'M0,' + H + ' L' + pts.join(' L');
+    const lastX = X(a.elapsed); const lastY = Y(a.spent);
+    const over = a.income && a.forecastLeft < 0;
+    const svg = '<svg class="an-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" aria-hidden="true">' +
+      [0.25, 0.5, 0.75].map((k) => '<line class="an-gl" x1="0" x2="' + W + '" y1="' + f(H * k) + '" y2="' + f(H * k) + '"></line>').join('') +
+      '<path class="an-area" d="' + line + ' L' + f(lastX) + ',' + H + ' Z"></path>' +
+      (a.budget ? '<line class="an-plan" x1="0" y1="' + H + '" x2="' + W + '" y2="' + f(Y(a.budget)) + '"></line>' : '') +
+      (a.elapsed < p.days ? '<line class="an-fc' + (over ? ' is-over' : '') + '" x1="' + f(lastX) + '" y1="' + f(lastY) + '" x2="' + W + '" y2="' + f(Y(a.forecast)) + '"></line>' : '') +
+      '<path class="an-line" d="' + line + '"></path>' +
+      '<line class="an-today" x1="' + f(lastX) + '" x2="' + f(lastX) + '" y1="0" y2="' + H + '"></line></svg>';
+    const todayPct = Math.min(100, (a.elapsed / p.days) * 100);
+    const dot = '<span class="an-dot" style="left:' + todayPct.toFixed(1) + '%;top:' + ((lastY / H) * 100).toFixed(1) + '%"></span>';
+    const tag = '<span class="an-tag" style="left:' + Math.min(86, Math.max(14, todayPct)).toFixed(1) + '%">' + esc(t('an.today')) + '</span>';
+
+    let pace = ''; let fc = '';
+    if (a.budget) {
+      const d = a.diffToday;
+      const even = Math.abs(d) < a.budget * 0.02;
+      pace = '<span class="pill ' + (d > 0 && !even ? 'pill-warn' : 'pill-ok') + '">' + esc(even ? t('an.even') : d > 0 ? t('an.ahead', M(d)) : t('an.behind', M(-d))) + '</span>';
+      fc = '<p class="small ' + (over ? 'warn-t' : 'muted') + '">' + esc(over ? t('an.fcOver', M(-a.forecastLeft)) : t('an.fcOk', M(a.forecastLeft))) + '</p>';
+    }
+    const legend = '<div class="an-legend small muted" aria-hidden="true"><span><i class="lg-fact"></i>' + esc(t('an.fact')) + '</span>' + (a.budget ? '<span><i class="lg-plan"></i>' + esc(t('an.plan')) + '</span>' : '') + '<span><i class="lg-fc' + (over ? ' is-over' : '') + '"></i>' + esc(t('an.forecast')) + '</span></div>';
+
+    const maxC = Math.max(1, ...a.cats.map((c) => Math.max(c.sum, c.prev)));
+    const cats = a.cats.map((c, i) => {
+      const name = c.cat === 'rest' ? t('an.rest', c.n) : t('cat.' + c.cat);
+      const color = c.cat === 'rest' ? 'var(--line)' : NZ.CATS[c.cat].color;
+      let ch = '';
+      if (c.change !== null) ch = '<span class="small ' + (c.change > 10 ? 'warn-t' : c.change < -10 ? 'teal' : 'muted') + '">' + (c.change > 0 ? '+' : '') + c.change + '%</span>';
+      else if (a.prevTotal !== null && c.cat !== 'rest' && !c.prev) ch = '<span class="small muted">' + esc(t('an.isNew')) + '</span>';
+      const share = a.spent ? Math.round((c.sum / a.spent) * 100) : 0;
+      return '<li class="an-cat" style="--i:' + i + '"><div class="row-between"><span class="row-gap"><span class="dot" style="background:' + color + '"></span><b>' + esc(name) + '</b><span class="small muted">' + share + '%</span></span><span class="row-gap">' + ch + '<b>' + M(c.sum) + '</b></span></div>' +
+        '<div class="an-bar"><i style="width:' + ((c.sum / maxC) * 100).toFixed(1) + '%;background:' + color + '"></i>' + (c.prev ? '<s style="left:' + ((c.prev / maxC) * 100).toFixed(1) + '%"></s>' : '') + '</div></li>';
+    }).join('');
+
+    return '<section class="card span-2 an' + (ui.animOnce ? '' : ' an-anim') + '" aria-labelledby="an-h"><div class="row-between wrap"><div><h2 id="an-h" class="h3">' + esc(t('an.title')) + '</h2><span class="small muted">' + esc(NZ.fmtDate(p.start) + ' — ' + NZ.fmtDate(NZ.addDays(p.end, -1))) + '</span></div>' + pace + '</div>' +
+      '<div class="an-grid2"><div><div class="an-chart" role="img" aria-label="' + esc(t('an.chart', M(a.spent), M(a.planToday))) + '"><div class="an-clip">' + svg + dot + '</div>' + tag + '</div>' + legend +
+      '<p class="small muted">' + esc(a.budget ? t('an.budget', M(a.budget)) : t('an.noIncome')) + '</p>' + fc + '</div>' +
+      '<div><h3 class="h4">' + esc(t('an.catsH')) + '</h3>' + (a.prevTotal !== null ? '<p class="small muted">' + esc(t('an.vsPrev')) + '</p>' : '') + '<ul class="an-cats">' + cats + '</ul></div></div></section>';
+  }
 
   function calendarCard(s) {
     const td = today();
