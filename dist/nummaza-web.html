@@ -3267,7 +3267,10 @@ NZ.API_URL = '';
       (hist.length ? '<section class="card"><h2 class="h3">' + esc(t('st.hist')) + '</h2><ul class="list">' + hist.map((h) => '<li class="li">' + icon('file') + '<span class="grow"><b>' + esc(h.name) + '</b><span class="small muted">' + esc(t('c.ops', h.count) + ' · ' + NZ.fmtDate(h.from) + ' — ' + NZ.fmtDate(h.to)) + '</span></span><button type="button" class="btn btn-sm" data-a="rmImport" data-v="' + h.id + '">' + esc(t('st.rm')) + '</button></li>').join('') + '</ul></section>' : '');
   }
   /* ---------- Траты из уведомлений банка (только в Android-приложении) ---------- */
-  const native = () => (window.NummazaNative && typeof window.NummazaNative.pullNotifications === 'function' ? window.NummazaNative : null);
+  // Есть ли автоимпорт в этой сборке: в обычном APK (1.3.1+) его нет — Play Защита блокирует такие приложения.
+  // У APK 1.2–1.3 метода bankNotif нет, а функция была.
+  const bankNotif = () => { const n = window.NummazaNative; if (!n || typeof n.pullNotifications !== 'function') return false; if (typeof n.bankNotif !== 'function') return true; try { return !!n.bankNotif(); } catch (e) { return false; } };
+  const native = () => (bankNotif() ? window.NummazaNative : null);
   function pushCard() {
     const nb = native();
     if (!nb) return '';
@@ -3303,7 +3306,11 @@ NZ.API_URL = '';
   function apkInfo() {
     const n = window.NummazaNative;
     if (!n || !n.apkUpdate) return null;
-    try { const j = n.apkUpdate(); return j ? JSON.parse(j) : null; } catch (e) { return null; }
+    let a = null;
+    try { const j = n.apkUpdate(); a = j ? JSON.parse(j) : null; } catch (e) { return null; }
+    // Сборка с уведомлениями банков обновляется на такую же, иначе функция пропала бы
+    if (a && a.url && bankNotif()) a.url = a.url.replace(/\/NUMMAZA\.apk$/, '/NUMMAZA-full.apk');
+    return a;
   }
   function updateBanner() {
     if (ui.update === 'ready') return '<div class="banner banner-teal" role="status"><span>' + esc(t('upd.ready')) + '</span><button type="button" class="btn btn-sm btn-on-teal" data-a="applyUpdate">' + esc(t('upd.apply')) + '</button></div>';

@@ -75,12 +75,16 @@ jobs:
       - name: Сборка APK
         env:
           NUMMAZA_API_URL: https://nummaza.onrender.com
-        run: bash android/build.sh "$PWD/dist/NUMMAZA.apk"
+        run: |
+          FLAVOR=lite bash android/build.sh "$PWD/dist/NUMMAZA.apk"
+          FLAVOR=full bash android/build.sh "$PWD/dist/NUMMAZA-full.apk"
 
       - uses: actions/upload-artifact@v4
         with:
           name: NUMMAZA-apk
-          path: dist/NUMMAZA.apk
+          path: |
+            dist/NUMMAZA.apk
+            dist/NUMMAZA-full.apk
           retention-days: 30
 
       - name: Релиз
@@ -94,5 +98,5 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --target "$GITHUB_SHA" --title "NUMMAZA $V" --notes "${NOTES:-NUMMAZA $V}" --latest
           fi
-          gh release upload "$TAG" dist/NUMMAZA.apk --clobber
+          gh release upload "$TAG" dist/NUMMAZA.apk dist/NUMMAZA-full.apk --clobber
           echo "APK: https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/NUMMAZA.apk"

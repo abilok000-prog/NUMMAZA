@@ -40,6 +40,8 @@
                 <data android:mimeType="application/pdf" />
             </intent-filter>
         </activity>
+        <!-- BANK_NOTIF: только в сборке NUMMAZA-full.apk. В обычном APK build.sh вырезает этот блок:
+             Google Play Защита блокирует установку не из магазина приложений с доступом к уведомлениям. -->
         <!-- Автоимпорт трат из уведомлений банков. Работает только после того, как пользователь
              сам включит доступ в Настройках → Доступ к уведомлениям. -->
         <service
@@ -51,6 +53,7 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+        <!-- /BANK_NOTIF -->
         <!-- Наступившее напоминание: вызывается только будильником самого приложения -->
         <receiver android:name=".ReminderReceiver" android:exported="false" />
         <!-- После перезагрузки телефона или обновления приложения — заново ставим напоминания -->

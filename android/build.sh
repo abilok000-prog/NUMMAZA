@@ -10,8 +10,12 @@ ROOT=$(pwd)
 T=$ROOT/tools
 B=$ROOT/build
 OUT=${1:-$ROOT/../dist/NUMMAZA.apk}
-VERSION_CODE=${VERSION_CODE:-4}
-VERSION_NAME=${VERSION_NAME:-1.3}
+VERSION_CODE=${VERSION_CODE:-5}
+VERSION_NAME=${VERSION_NAME:-1.3.1}
+# FLAVOR=lite (по умолчанию) — без чтения уведомлений банков: ставится из браузера без блокировки Play Защиты.
+# FLAVOR=full — с автоимпортом трат из уведомлений банков (NUMMAZA-full.apk; ставится через ADB или с отключённой проверкой).
+FLAVOR=${FLAVOR:-lite}
+case "$FLAVOR" in lite|full) ;; *) echo "FLAVOR должен быть lite или full"; exit 1;; esac
 MAVEN=https://repo1.maven.org/maven2
 
 mkdir -p "$T"
@@ -25,6 +29,11 @@ if [ ! -x "$T/aapt2" ]; then
 fi
 
 rm -rf "$B" && mkdir -p "$B/classes" "$B/stubs" "$B/assets/www"
+echo "Вариант: $FLAVOR"
+# Манифест варианта: в lite нет сервиса уведомлений (блок между BANK_NOTIF и /BANK_NOTIF)
+if [ "$FLAVOR" = full ]; then cp "$ROOT/AndroidManifest.xml" "$B/AndroidManifest.xml"
+else sed '/<!-- BANK_NOTIF/,/<!-- \/BANK_NOTIF -->/d' "$ROOT/AndroidManifest.xml" > "$B/AndroidManifest.xml"; fi
+if [ "$FLAVOR" = lite ] && grep -q NotificationListenerService "$B/AndroidManifest.xml"; then echo "lite: сервис уведомлений не вырезан"; exit 1; fi
 
 echo "1/6 Веб-приложение → assets/www"
 cp -r "$ROOT/../app/." "$B/assets/www/"
@@ -49,14 +58,14 @@ PY
 
 echo "2/6 Ресурсы (aapt2 compile + link)"
 "$T/aapt2" compile --dir "$ROOT/res" -o "$B/res.zip"
-"$T/aapt2" link -o "$B/base.apk" -I "$T/android.jar" --manifest "$ROOT/AndroidManifest.xml" \
+"$T/aapt2" link -o "$B/base.apk" -I "$T/android.jar" --manifest "$B/AndroidManifest.xml" \
   -A "$B/assets" "$B/res.zip" --min-sdk-version 26 --target-sdk-version 34 \
   --version-code "$VERSION_CODE" --version-name "$VERSION_NAME" --auto-add-overlay
 
 echo "3/6 Java → class (заглушки Android API только для компиляции)"
 javac -nowarn -source 8 -target 8 -d "$B/stubs" $(find "$ROOT/stubs" -name '*.java') 2>&1 | grep -v 'warning: \[options\]' || true
 mkdir -p "$B/gen/kz/nummaza/app"
-printf 'package kz.nummaza.app;\n/** Создаётся android/build.sh. */\nfinal class BuildInfo {\n    static final int VERSION_CODE = %s;\n    static final String VERSION_NAME = "%s";\n}\n' "$VERSION_CODE" "$VERSION_NAME" > "$B/gen/kz/nummaza/app/BuildInfo.java"
+printf 'package kz.nummaza.app;\n/** Создаётся android/build.sh. */\nfinal class BuildInfo {\n    static final int VERSION_CODE = %s;\n    static final String VERSION_NAME = "%s";\n    static final boolean BANK_NOTIF = %s;\n}\n' "$VERSION_CODE" "$VERSION_NAME" "$([ "$FLAVOR" = full ] && echo true || echo false)" > "$B/gen/kz/nummaza/app/BuildInfo.java"
 javac -nowarn -source 8 -target 8 -cp "$B/stubs" -d "$B/classes" $(find "$ROOT/src" "$B/gen" -name '*.java') 2>&1 | grep -v 'warning: \[options\]' || true
 test -f "$B/classes/kz/nummaza/app/MainActivity.class"
 

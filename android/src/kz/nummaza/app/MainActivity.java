@@ -252,6 +252,10 @@ public class MainActivity extends Activity {
 
     /** Мост для JavaScript: window.NummazaNative.share(text), takeSharedFile(), уведомления банков */
     public class Bridge {
+        /** Есть ли в этой сборке автоимпорт из уведомлений банков (NUMMAZA-full.apk) */
+        @JavascriptInterface
+        public boolean bankNotif() { return BuildInfo.BANK_NOTIF; }
+
         /** Включён ли доступ к уведомлениям */
         @JavascriptInterface
         public boolean notifAccess() {

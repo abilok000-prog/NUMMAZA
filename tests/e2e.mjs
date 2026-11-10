@@ -301,15 +301,31 @@ await page.evaluate(() => {
   window.NummazaNative.applyUpdate = () => { window.__applied = true; };
   location.hash = 'home';
 });
-await page.waitForSelector('.banner-teal a[href="https://example.com/NUMMAZA.apk"]');
-ok((await text()).includes('Вышло приложение 1.3 для Android'), 'на «Обзоре» — баннер о новом APK со ссылкой');
+await page.waitForSelector('.banner-teal a[href="https://example.com/NUMMAZA-full.apk"]');
+ok((await text()).includes('Вышло приложение 1.3 для Android'), 'на «Обзоре» — баннер о новом APK со ссылкой (APK с уведомлениями банков → NUMMAZA-full.apk)');
 await page.locator('[data-a="dismiss"][data-v="apk:1.3"]').click();
-ok(await page.locator('a[href="https://example.com/NUMMAZA.apk"]').count() === 0, 'баннер APK можно закрыть');
+ok(await page.locator('a[href="https://example.com/NUMMAZA-full.apk"]').count() === 0, 'баннер APK можно закрыть');
 await page.evaluate(() => window.NZ.onUpdateReady());
 await page.waitForSelector('[data-a="applyUpdate"]');
 ok((await text()).includes('Доступна новая версия NUMMAZA'), 'скачано обновление — баннер «Обновить»');
 await page.locator('[data-a="applyUpdate"]').click();
 ok(await page.evaluate(() => window.__applied === true), '«Обновить» применяет обновление через Android');
+
+console.log('\n18b. Обычный APK без уведомлений банков (Play Защита)');
+await page.reload(); // как после «Обновить» на телефоне
+await page.waitForSelector('.safe-v');
+await page.evaluate(() => {
+  window.NummazaNative = { notifAccess: () => false, openNotifSettings() {}, pullNotifications: () => '[]', share() {} };
+  window.NummazaNative.bankNotif = () => false;
+  window.NummazaNative.apkUpdate = () => JSON.stringify({ name: '1.3.2', url: 'https://example.com/NUMMAZA.apk' });
+  location.hash = 'statements';
+});
+await page.waitForSelector('[data-a="pickFile"], #file', { state: 'attached' });
+ok(await page.locator('#push-h').count() === 0, 'в обычном APK карточки «Траты из уведомлений банка» нет');
+await page.evaluate(() => { location.hash = 'home'; });
+await page.waitForSelector('.banner-teal a[href="https://example.com/NUMMAZA.apk"]');
+ok(true, 'обычный APK обновляется на обычный NUMMAZA.apk');
+await page.evaluate(() => { window.NummazaNative.bankNotif = () => true; });
 
 console.log('\n19. Версия 1.3: кошелёк, рассрочки, экспорт, PIN-код');
 await page.evaluate(() => { delete window.NummazaNative.apkUpdate; location.hash = 'wallet'; });
